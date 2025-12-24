@@ -146,9 +146,11 @@ def generate_html(csv_path: str, rows: list[dict], stats: dict) -> str:
     # Prepare chart data
     all_latencies = stats['all_latencies']
     
-    # Per-thread latencies for line chart (in order)
+    # Per-thread latencies for line chart (in order) with wave info
     thread_latencies = []
+    thread_waves = []
     for row in rows:
+        wave_num = int(row.get('wave', 1))
         if row.get('success') == 'True':
             try:
                 thread_latencies.append(float(row.get('total_ms', 0)))
@@ -156,6 +158,7 @@ def generate_html(csv_path: str, rows: list[dict], stats: dict) -> str:
                 thread_latencies.append(0)
         else:
             thread_latencies.append(0)
+        thread_waves.append(wave_num)
     
     # Per-wave averages for line chart
     wave_avgs = [wave.get('avg', 0) for wave in stats['waves']]
@@ -669,6 +672,7 @@ def generate_html(csv_path: str, rows: list[dict], stats: dict) -> str:
         }});
         
         // Thread completion time line chart
+        const threadWaves = {json.dumps(thread_waves)};
         new Chart(document.getElementById('threadChart'), {{
             type: 'line',
             data: {{
@@ -679,14 +683,36 @@ def generate_html(csv_path: str, rows: list[dict], stats: dict) -> str:
                     borderColor: '#58a6ff',
                     backgroundColor: 'rgba(88, 166, 255, 0.1)',
                     fill: true,
-                    pointRadius: {1 if len(thread_latencies) > 50 else 3},
+                    pointRadius: 0,
+                    pointHoverRadius: 6,
+                    pointHoverBackgroundColor: '#58a6ff',
+                    pointHoverBorderColor: '#fff',
+                    pointHoverBorderWidth: 2,
                     tension: 0.1
                 }}]
             }},
             options: {{
                 responsive: true,
+                interaction: {{
+                    intersect: false,
+                    mode: 'index'
+                }},
                 plugins: {{
-                    legend: {{ display: false }}
+                    legend: {{ display: false }},
+                    tooltip: {{
+                        callbacks: {{
+                            title: function(context) {{
+                                const idx = context[0].dataIndex;
+                                return `Thread #${{idx + 1}}`;
+                            }},
+                            label: function(context) {{
+                                const idx = context.dataIndex;
+                                const wave = threadWaves[idx];
+                                const time = context.parsed.y.toFixed(0);
+                                return [`Completion: ${{time}} ms`, `Wave: ${{wave}}`];
+                            }}
+                        }}
+                    }}
                 }},
                 scales: {{
                     x: {{ 
