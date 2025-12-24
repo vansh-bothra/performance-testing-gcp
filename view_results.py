@@ -568,7 +568,7 @@ def generate_html(csv_path: str, rows: list[dict], stats: dict) -> str:
                 <div class="chart-title">Per-Wave Average Latency</div>
                 <canvas id="waveChart"></canvas>
             </div>
-            <div class="chart-container" style="grid-column: span 2;">
+            <div class="chart-container" style="grid-column: span 2; height: 300px;">
                 <div class="chart-title">Per-Thread Completion Time</div>
                 <canvas id="threadChart"></canvas>
             </div>
@@ -695,6 +695,7 @@ def generate_html(csv_path: str, rows: list[dict], stats: dict) -> str:
             }},
             options: {{
                 responsive: true,
+                maintainAspectRatio: false,
                 interaction: {{
                     intersect: false,
                     mode: 'index'
@@ -727,7 +728,7 @@ def generate_html(csv_path: str, rows: list[dict], stats: dict) -> str:
                 }},
                 scales: {{
                     x: {{ 
-                        title: {{ display: true, text: 'Thread #' }},
+                        title: {{ display: false }},
                         grid: {{ display: false }}
                     }},
                     y: {{ 

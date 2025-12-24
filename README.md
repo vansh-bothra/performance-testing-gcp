@@ -32,13 +32,7 @@ python api_flow.py --parallel 10 --random-uid
 ### Wave-Based Load Test
 Starts N threads per second for M seconds:
 ```bash
-python api_flow.py --rps 30 --duration 5 --title "Baseline Test" --output results/
-```
-
-### View Results
-Generate HTML dashboard from CSV:
-```bash
-python view_results.py results/2025-12-24_Baseline_Test.csv --open
+python api_flow.py --rps 3 --duration 5 --title "Baseline Test" --output results/ --random-uid --html
 ```
 
 ## CLI Options
@@ -53,3 +47,4 @@ python view_results.py results/2025-12-24_Baseline_Test.csv --open
 | `--duration N` | Seconds to run (wave mode) |
 | `--title "..."` | Title for the run (in filename) |
 | `--output <path>` | Save CSV results to path |
+| `--html` | Generate HTML dashboard after CSV |

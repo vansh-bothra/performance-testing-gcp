@@ -823,6 +823,7 @@ if __name__ == "__main__":
     parser.add_argument("--duration", type=int, default=1, help="duration in seconds (wave mode)")
     parser.add_argument("--title", type=str, default="", help="title for this test run (used in output filename)")
     parser.add_argument("--output", type=str, default="", help="output path for CSV results (file or directory)")
+    parser.add_argument("--html", action="store_true", help="generate HTML dashboard after saving CSV")
     
     args = parser.parse_args()
     
@@ -871,6 +872,13 @@ if __name__ == "__main__":
         if args.output:
             filepath = save_results_to_csv(run_data, args.output)
             print(f"\nResults saved to: {filepath}")
+            
+            # generate HTML if requested
+            if args.html:
+                import subprocess
+                html_path = filepath.replace('.csv', '.html')
+                subprocess.run(['python3', 'view_results.py', filepath, '-o', html_path], check=True)
+                print(f"HTML dashboard: {html_path}")
     
     elif args.parallel > 0:
         print("=" * 60)
