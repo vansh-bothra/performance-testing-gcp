@@ -28,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 
 # hardcoded values for v2
-PUZZLE_ID = "e3d146e8"
+PUZZLE_ID = "1461ef6d"
 STATE_LEN = 185
 
 
@@ -40,8 +40,8 @@ def generate_random_uid(length: int = 8) -> str:
 @dataclass
 class APIConfig:
     """Config for the test run - base URL, credentials, timeouts etc."""
-    base_url: str = "https://staging.amuselabs.com/pmm/"
-    set_param: str = "pm"
+    base_url: str = "https://cdn-test.amuselabs.com/pmm/"
+    set_param: str = "gandalf"
     uid: str = "vansh"
     use_random_uid: bool = False
     uid_pool: list = field(default_factory=list)
@@ -66,13 +66,19 @@ class APIFlow:
     Each step builds on data from the previous one.
     """
     
-    def __init__(self, config: Optional[APIConfig] = None):
+    def __init__(self, config: Optional[APIConfig] = None, verbose: bool = False):
         self.config = config or APIConfig()
+        self.verbose = verbose
         self.session = requests.Session()
         self.session.headers.update(self.config.headers)
         
         # shared state between steps
         self.context: dict[str, Any] = {}
+    
+    def _log(self, msg: str):
+        """Print only if verbose mode is enabled."""
+        if self.verbose:
+            print(msg)
     
     def b64_decode(self, encoded: str) -> str:
         """Decode base64 string to utf-8."""
@@ -133,7 +139,7 @@ class APIFlow:
         uid = self.config.get_uid()
         self.context['uid'] = uid
         
-        print(f"Step 1: GET /date-picker (uid={uid})")
+        self._log(f"Step 1: GET /date-picker (uid={uid})")
         
         response, latency = self.make_request(
             method="GET",
@@ -156,7 +162,7 @@ class APIFlow:
         self.context['load_token'] = load_token
         self.context['params_json'] = params_json
         
-        print(f"  done in {latency:.1f}ms")
+        self._log(f"  done in {latency:.1f}ms")
         
         return {'status_code': response.status_code, 'uid': uid, 'latency_ms': latency}
     
@@ -168,7 +174,7 @@ class APIFlow:
         if not load_token:
             raise ValueError("need loadToken from step1")
         
-        print("Step 2: POST /postPickerStatus")
+        self._log("Step 2: POST /postPickerStatus")
         
         response, latency = self.make_request(
             method="POST",
@@ -186,7 +192,7 @@ class APIFlow:
         if data.get("status") != 0:
             raise ValueError(f"postPickerStatus failed: {data}")
         
-        print(f"  done in {latency:.1f}ms")
+        self._log(f"  done in {latency:.1f}ms")
         
         return {'status_code': response.status_code, 'latency_ms': latency}
     
@@ -204,7 +210,7 @@ class APIFlow:
         puzzle_id = PUZZLE_ID
         self.context['puzzle_id'] = puzzle_id
         
-        print(f"Step 3: GET /crossword (id={puzzle_id}) [HARDCODED]")
+        self._log(f"Step 3: GET /crossword (id={puzzle_id}) [HARDCODED]")
         
         src_url = f"{self.config.base_url}date-picker?set={self.config.set_param}&uid={uid}"
         
@@ -231,7 +237,7 @@ class APIFlow:
             self.context['decoded_play'] = decoded_play
             self.context['play_id'] = decoded_play.get('playId')
         
-        print(f"  done in {latency:.1f}ms")
+        self._log(f"  done in {latency:.1f}ms")
         
         return {'status_code': response.status_code, 'puzzle_id': puzzle_id, 'latency_ms': latency}
     
@@ -284,7 +290,7 @@ class APIFlow:
         # use hardcoded state length
         state_len = STATE_LEN
         
-        print(f"Step 4: POST /api/v1/plays (10 iterations, state_len={state_len}) [HARDCODED]")
+        self._log(f"Step 4: POST /api/v1/plays (10 iterations, state_len={state_len}) [HARDCODED]")
         
         primary, secondary = self._generate_state(state_len, fill_ratio=0.1)
         
@@ -348,11 +354,11 @@ class APIFlow:
             if data.get("status") != 0:
                 raise ValueError(f"plays API failed at iteration {i+1}: {data}")
             
-            print(f"  [{i+1}/10] playState={play_state} - {latency:.1f}ms")
+            self._log(f"  [{i+1}/10] playState={play_state} - {latency:.1f}ms")
             
             results.append({'iteration': i + 1, 'play_state': play_state, 'latency_ms': latency})
         
-        print(f"  all done")
+        self._log(f"  all done")
         
         return {'iterations': results, 'success': True}
     
@@ -371,22 +377,22 @@ class APIFlow:
             results['success'] = True
             
         except requests.exceptions.RequestException as e:
-            print(f"request error: {e}")
+            self._log(f"request error: {e}")
             results['success'] = False
             results['error'] = str(e)
         except ValueError as e:
-            print(f"parse error: {e}")
+            self._log(f"parse error: {e}")
             results['success'] = False
             results['error'] = str(e)
         
         return results
 
 
-def run_single_thread(use_random_uid: bool = False, uid: str = "vansh", uid_pool: list = None) -> dict:
+def run_single_thread(use_random_uid: bool = False, uid: str = "vansh", uid_pool: list = None, verbose: bool = False) -> dict:
     """Run one complete flow."""
     config = APIConfig(
-        base_url="https://staging.amuselabs.com/pmm/",
-        set_param="pm",
+        base_url="https://cdn-test.amuselabs.com/pmm/",
+        set_param="gandalf",
         uid=uid,
         use_random_uid=use_random_uid,
         uid_pool=uid_pool or [],
@@ -396,17 +402,17 @@ def run_single_thread(use_random_uid: bool = False, uid: str = "vansh", uid_pool
         },
     )
     
-    flow = APIFlow(config)
+    flow = APIFlow(config, verbose=verbose)
     return flow.run_sequential_flow()
 
 
-def run_parallel_threads(num_threads: int = 5, use_random_uid: bool = True, uid_pool: list = None) -> list[dict]:
+def run_parallel_threads(num_threads: int = 5, use_random_uid: bool = True, uid_pool: list = None, verbose: bool = False) -> list[dict]:
     """Spin up multiple threads, each running its own flow."""
     results = []
     
     with ThreadPoolExecutor(max_workers=num_threads) as executor:
         futures = [
-            executor.submit(run_single_thread, use_random_uid=use_random_uid, uid_pool=uid_pool)
+            executor.submit(run_single_thread, use_random_uid=use_random_uid, uid_pool=uid_pool, verbose=verbose)
             for _ in range(num_threads)
         ]
         
@@ -414,10 +420,12 @@ def run_parallel_threads(num_threads: int = 5, use_random_uid: bool = True, uid_
             try:
                 result = future.result()
                 results.append({'thread': i, 'result': result})
-                print(f"Thread {i} done: {'OK' if result.get('success') else 'FAILED'}")
+                if verbose:
+                    print(f"Thread {i} done: {'OK' if result.get('success') else 'FAILED'}")
             except Exception as e:
                 results.append({'thread': i, 'error': str(e)})
-                print(f"Thread {i} crashed: {e}")
+                if verbose:
+                    print(f"Thread {i} crashed: {e}")
     
     return results
 
@@ -428,27 +436,30 @@ def run_wave_execution(
     use_random_uid: bool = False,
     uid_pool: list = None,
     title: str = "",
+    verbose: bool = False,
 ) -> dict:
     """Run wave-based load test: start `rps` threads every second for `duration` seconds."""
     all_results = []
     waves = []
     
     total_threads = rps * duration
-    print(f"Starting wave execution: {rps} req/sec for {duration} seconds ({total_threads} total)")
-    print(f"Using hardcoded puzzle: {PUZZLE_ID}, state_len: {STATE_LEN}")
-    print("-" * 60)
+    if verbose:
+        print(f"Starting wave execution: {rps} req/sec for {duration} seconds ({total_threads} total)")
+        print(f"Using hardcoded puzzle: {PUZZLE_ID}, state_len: {STATE_LEN}")
+        print("-" * 60)
     
     overall_start = time.perf_counter()
     
     for wave_num in range(duration):
         wave_start = time.perf_counter()
-        print(f"\nWave {wave_num + 1}/{duration}: Starting {rps} threads...")
+        if verbose:
+            print(f"\nWave {wave_num + 1}/{duration}: Starting {rps} threads...")
         
         wave_results = []
         
         with ThreadPoolExecutor(max_workers=rps) as executor:
             futures = [
-                executor.submit(run_single_thread, use_random_uid=use_random_uid, uid_pool=uid_pool)
+                executor.submit(run_single_thread, use_random_uid=use_random_uid, uid_pool=uid_pool, verbose=verbose)
                 for _ in range(rps)
             ]
             
@@ -501,7 +512,10 @@ def run_wave_execution(
         waves.append(wave_stats)
         all_results.extend(wave_results)
         
-        print(f"  Wave {wave_num + 1} complete: {len(successful)}/{len(wave_results)} success, {wave_duration_ms:.0f}ms")
+        if verbose:
+            print(f"  Wave {wave_num + 1} complete: {len(successful)}/{len(wave_results)} success, {wave_duration_ms:.0f}ms")
+        elif (wave_num + 1) % 50 == 0:
+            print(f"Completed {wave_num + 1}/{duration} waves...")
         
         if wave_num < duration - 1:
             elapsed = time.perf_counter() - wave_start
@@ -772,23 +786,27 @@ if __name__ == "__main__":
     parser.add_argument("--title", type=str, default="", help="title for this test run")
     parser.add_argument("--output", type=str, default="", help="output path for CSV results")
     parser.add_argument("--html", action="store_true", help="generate HTML dashboard after saving CSV")
+    parser.add_argument("--verbose", "-v", action="store_true", help="print step-by-step progress")
     
     args = parser.parse_args()
     
-    print(f"V2 Mode: puzzle_id={PUZZLE_ID}, state_len={STATE_LEN}")
-    print("")
+    if args.verbose:
+        print(f"V2 Mode: puzzle_id={PUZZLE_ID}, state_len={STATE_LEN}")
+        print("")
     
     uid_pool = None
     if args.uid_pool_size > 0:
         uid_pool = [generate_random_uid() for _ in range(args.uid_pool_size)]
-        print(f"Generated UID pool of {len(uid_pool)} users")
+        if args.verbose:
+            print(f"Generated UID pool of {len(uid_pool)} users")
     
     if args.rps > 0:
-        print("=" * 60)
-        print(f"Wave Execution Mode (V2)")
-        if args.title:
-            print(f"Title: {args.title}")
-        print("=" * 60 + "\n")
+        if args.verbose:
+            print("=" * 60)
+            print(f"Wave Execution Mode (V2)")
+            if args.title:
+                print(f"Title: {args.title}")
+            print("=" * 60 + "\n")
         
         run_data = run_wave_execution(
             rps=args.rps,
@@ -796,6 +814,7 @@ if __name__ == "__main__":
             use_random_uid=args.random_uid,
             uid_pool=uid_pool,
             title=args.title,
+            verbose=args.verbose,
         )
         
         print("\n" + "=" * 60)
@@ -829,30 +848,34 @@ if __name__ == "__main__":
                 print(f"HTML dashboard: {html_path}")
     
     elif args.parallel > 0:
-        print("=" * 60)
-        print(f"Running {args.parallel} parallel threads (V2)...")
-        print("=" * 60 + "\n")
+        if args.verbose:
+            print("=" * 60)
+            print(f"Running {args.parallel} parallel threads (V2)...")
+            print("=" * 60 + "\n")
         
         start_time = time.perf_counter()
         results = run_parallel_threads(
             num_threads=args.parallel,
             use_random_uid=args.random_uid,
             uid_pool=uid_pool,
+            verbose=args.verbose,
         )
         total_time_ms = (time.perf_counter() - start_time) * 1000
         
         print(format_results_table(results, total_time_ms))
         
     else:
-        print("=" * 60)
-        print("Running single thread (V2)...")
-        print("=" * 60 + "\n")
+        if args.verbose:
+            print("=" * 60)
+            print("Running single thread (V2)...")
+            print("=" * 60 + "\n")
         
         start_time = time.perf_counter()
         result = run_single_thread(
             use_random_uid=args.random_uid,
             uid=args.uid,
             uid_pool=uid_pool,
+            verbose=args.verbose,
         )
         total_time_ms = (time.perf_counter() - start_time) * 1000
         
