@@ -4,18 +4,24 @@ Performance Testing Script
 Simulates a user flow: opening puzzle picker -> selecting crossword -> playing through completion.
 
 Usage:
-    python api_flow.py --uid vansh              # single run with specific uid
-    python api_flow.py --random-uid             # single run with random uid  
-    python api_flow.py --parallel 5 --random-uid  # 5 parallel threads
+    python api_flow.py --uid vansh                    # single run with specific uid
+    python api_flow.py --random-uid                   # single run with random uid  
+    python api_flow.py --parallel 5 --random-uid      # 5 parallel threads
+    
+    # Wave-based execution (30 requests/second for 5 seconds)
+    python api_flow.py --rps 30 --duration 5 --title "Baseline Test" --output results/
 """
 
 import base64
+import csv
 import json
+import os
 import re
 import time
 import random
 import string
 import requests
+from datetime import datetime
 from typing import Any, Optional
 from dataclasses import dataclass, field
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -456,6 +462,213 @@ def run_parallel_threads(num_threads: int = 5, use_random_uid: bool = True, uid_
     return results
 
 
+def run_wave_execution(
+    rps: int = 30,
+    duration: int = 1,
+    use_random_uid: bool = False,
+    uid_pool: list = None,
+    title: str = "",
+) -> dict:
+    """
+    Run wave-based load test: start `rps` threads every second for `duration` seconds.
+    Returns structured results with per-wave breakdown.
+    """
+    all_results = []
+    waves = []
+    
+    total_threads = rps * duration
+    print(f"Starting wave execution: {rps} req/sec for {duration} seconds ({total_threads} total)")
+    print("-" * 60)
+    
+    overall_start = time.perf_counter()
+    
+    for wave_num in range(duration):
+        wave_start = time.perf_counter()
+        print(f"\nWave {wave_num + 1}/{duration}: Starting {rps} threads...")
+        
+        wave_results = []
+        
+        with ThreadPoolExecutor(max_workers=rps) as executor:
+            futures = [
+                executor.submit(run_single_thread, use_random_uid=use_random_uid, uid_pool=uid_pool)
+                for _ in range(rps)
+            ]
+            
+            for i, future in enumerate(as_completed(futures)):
+                try:
+                    result = future.result()
+                    wave_results.append({
+                        'wave': wave_num + 1,
+                        'thread': i,
+                        'result': result
+                    })
+                except Exception as e:
+                    wave_results.append({
+                        'wave': wave_num + 1,
+                        'thread': i,
+                        'error': str(e)
+                    })
+        
+        wave_end = time.perf_counter()
+        wave_duration_ms = (wave_end - wave_start) * 1000
+        
+        # compute wave stats
+        successful = [r for r in wave_results if r.get('result', {}).get('success')]
+        failed = len(wave_results) - len(successful)
+        
+        latencies = []
+        for r in successful:
+            res = r['result']
+            total = (
+                res.get('step1', {}).get('latency_ms', 0) +
+                res.get('step2', {}).get('latency_ms', 0) +
+                res.get('step3', {}).get('latency_ms', 0) +
+                sum(it.get('latency_ms', 0) for it in res.get('step4', {}).get('iterations', []))
+            )
+            latencies.append(total)
+        
+        wave_stats = {
+            'wave_number': wave_num + 1,
+            'threads': len(wave_results),
+            'success': len(successful),
+            'failed': failed,
+            'duration_ms': wave_duration_ms,
+            'latencies': latencies,
+        }
+        
+        if latencies:
+            wave_stats['min'] = min(latencies)
+            wave_stats['max'] = max(latencies)
+            wave_stats['avg'] = sum(latencies) / len(latencies)
+        
+        waves.append(wave_stats)
+        all_results.extend(wave_results)
+        
+        print(f"  Wave {wave_num + 1} complete: {len(successful)}/{len(wave_results)} success, {wave_duration_ms:.0f}ms")
+        
+        # wait for next wave (1 second intervals)
+        if wave_num < duration - 1:
+            elapsed = time.perf_counter() - wave_start
+            sleep_time = max(0, 1.0 - elapsed)
+            if sleep_time > 0:
+                time.sleep(sleep_time)
+    
+    overall_end = time.perf_counter()
+    total_time_ms = (overall_end - overall_start) * 1000
+    
+    return {
+        'title': title,
+        'timestamp': datetime.now().isoformat(),
+        'config': {
+            'rps': rps,
+            'duration': duration,
+            'total_threads': total_threads,
+        },
+        'waves': waves,
+        'results': all_results,
+        'total_time_ms': total_time_ms,
+    }
+
+
+def save_results_to_csv(run_data: dict, output_path: str) -> str:
+    """
+    Save run results to CSV file.
+    Returns the full path to the saved file.
+    """
+    title = run_data.get('title', 'run')
+    # sanitize title for filename
+    safe_title = re.sub(r'[^\w\s-]', '', title).replace(' ', '_')
+    
+    timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    
+    # determine filename
+    if output_path.endswith('.csv'):
+        filepath = output_path
+    else:
+        # it's a directory, generate filename
+        os.makedirs(output_path, exist_ok=True)
+        filename = f"{timestamp}_{safe_title}.csv" if safe_title else f"{timestamp}.csv"
+        filepath = os.path.join(output_path, filename)
+    
+    # flatten results to rows
+    rows = []
+    for item in run_data.get('results', []):
+        wave = item.get('wave', 0)
+        thread = item.get('thread', 0)
+        
+        if 'error' in item:
+            rows.append({
+                'wave': wave,
+                'thread': thread,
+                'uid': '',
+                'success': False,
+                'error': item['error'],
+                'step1_ms': '',
+                'step2_ms': '',
+                'step3_ms': '',
+                'step4_avg_ms': '',
+                'step4_total_ms': '',
+                'total_ms': '',
+            })
+            continue
+        
+        result = item.get('result', {})
+        if not result.get('success'):
+            rows.append({
+                'wave': wave,
+                'thread': thread,
+                'uid': result.get('step1', {}).get('uid', ''),
+                'success': False,
+                'error': result.get('error', 'unknown'),
+                'step1_ms': '',
+                'step2_ms': '',
+                'step3_ms': '',
+                'step4_avg_ms': '',
+                'step4_total_ms': '',
+                'total_ms': '',
+            })
+            continue
+        
+        s1 = result.get('step1', {})
+        s2 = result.get('step2', {})
+        s3 = result.get('step3', {})
+        s4 = result.get('step4', {})
+        
+        s4_iters = s4.get('iterations', [])
+        s4_latencies = [it.get('latency_ms', 0) for it in s4_iters]
+        s4_total = sum(s4_latencies)
+        s4_avg = s4_total / len(s4_latencies) if s4_latencies else 0
+        
+        l1 = s1.get('latency_ms', 0)
+        l2 = s2.get('latency_ms', 0)
+        l3 = s3.get('latency_ms', 0)
+        total = l1 + l2 + l3 + s4_total
+        
+        rows.append({
+            'wave': wave,
+            'thread': thread,
+            'uid': s1.get('uid', ''),
+            'success': True,
+            'error': '',
+            'step1_ms': round(l1, 2),
+            'step2_ms': round(l2, 2),
+            'step3_ms': round(l3, 2),
+            'step4_avg_ms': round(s4_avg, 2),
+            'step4_total_ms': round(s4_total, 2),
+            'total_ms': round(total, 2),
+        })
+    
+    # write CSV
+    fieldnames = ['wave', 'thread', 'uid', 'success', 'error', 'step1_ms', 'step2_ms', 'step3_ms', 'step4_avg_ms', 'step4_total_ms', 'total_ms']
+    
+    with open(filepath, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    
+    return filepath
+
+
 def format_results_table(results: list[dict], total_time_ms: float) -> str:
     """Format results as a table with aggregate stats."""
     lines = []
@@ -603,7 +816,13 @@ if __name__ == "__main__":
     parser.add_argument("--random-uid", action="store_true", help="generate random uid for each run")
     parser.add_argument("--uid", type=str, default="vansh", help="uid to use (ignored if --random-uid or --uid-pool-size)")
     parser.add_argument("--uid-pool-size", type=int, default=0, help="size of UID pool to pick from randomly (simulates repeat users)")
-    parser.add_argument("--parallel", type=int, default=0, help="number of parallel threads (0 = single)")
+    parser.add_argument("--parallel", type=int, default=0, help="number of parallel threads (0 = single, ignored if --rps is set)")
+    
+    # wave-based execution
+    parser.add_argument("--rps", type=int, default=0, help="requests per second (wave mode)")
+    parser.add_argument("--duration", type=int, default=1, help="duration in seconds (wave mode)")
+    parser.add_argument("--title", type=str, default="", help="title for this test run (used in output filename)")
+    parser.add_argument("--output", type=str, default="", help="output path for CSV results (file or directory)")
     
     args = parser.parse_args()
     
@@ -613,7 +832,47 @@ if __name__ == "__main__":
         uid_pool = [generate_random_uid() for _ in range(args.uid_pool_size)]
         print(f"Generated UID pool of {len(uid_pool)} users: {uid_pool[:5]}{'...' if len(uid_pool) > 5 else ''}")
     
-    if args.parallel > 0:
+    # wave-based execution mode
+    if args.rps > 0:
+        print("=" * 60)
+        print(f"Wave Execution Mode")
+        if args.title:
+            print(f"Title: {args.title}")
+        print("=" * 60 + "\n")
+        
+        run_data = run_wave_execution(
+            rps=args.rps,
+            duration=args.duration,
+            use_random_uid=args.random_uid,
+            uid_pool=uid_pool,
+            title=args.title,
+        )
+        
+        # print summary
+        print("\n" + "=" * 60)
+        print("WAVE EXECUTION SUMMARY")
+        print("=" * 60)
+        print(f"  Title:            {run_data['title'] or '(none)'}")
+        print(f"  Timestamp:        {run_data['timestamp']}")
+        print(f"  Config:           {run_data['config']['rps']} rps × {run_data['config']['duration']}s = {run_data['config']['total_threads']} threads")
+        print(f"  Total Wall Time:  {run_data['total_time_ms']:.0f} ms")
+        print("")
+        print(f"  {'Wave':<6} {'Success':<10} {'Min':<10} {'Max':<10} {'Avg':<10}")
+        print("  " + "-" * 46)
+        for wave in run_data['waves']:
+            success_str = f"{wave['success']}/{wave['threads']}"
+            min_val = f"{wave.get('min', 0):.0f}" if wave.get('min') else "-"
+            max_val = f"{wave.get('max', 0):.0f}" if wave.get('max') else "-"
+            avg_val = f"{wave.get('avg', 0):.0f}" if wave.get('avg') else "-"
+            print(f"  {wave['wave_number']:<6} {success_str:<10} {min_val:<10} {max_val:<10} {avg_val:<10}")
+        print("=" * 60)
+        
+        # save CSV if requested
+        if args.output:
+            filepath = save_results_to_csv(run_data, args.output)
+            print(f"\nResults saved to: {filepath}")
+    
+    elif args.parallel > 0:
         print("=" * 60)
         print(f"Running {args.parallel} parallel threads...")
         print("=" * 60 + "\n")
@@ -642,3 +901,4 @@ if __name__ == "__main__":
         total_time_ms = (time.perf_counter() - start_time) * 1000
         
         print(format_single_result(result, total_time_ms))
+
