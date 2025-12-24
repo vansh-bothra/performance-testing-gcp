@@ -33,6 +33,7 @@ class APIConfig:
     set_param: str = "pm"
     uid: str = "vansh"
     use_random_uid: bool = False
+    uid_pool: list = field(default_factory=list)  # pool of UIDs to pick from
     
     headers: dict = field(default_factory=lambda: {
         "Content-Type": "application/json",
@@ -41,6 +42,9 @@ class APIConfig:
     timeout: int = 30
     
     def get_uid(self) -> str:
+        if self.uid_pool:
+            # pick randomly from the pre-generated pool
+            return random.choice(self.uid_pool)
         if self.use_random_uid:
             return generate_random_uid()
         return self.uid
@@ -412,13 +416,14 @@ class APIFlow:
         return results
 
 
-def run_single_thread(use_random_uid: bool = False, uid: str = "vansh") -> dict:
+def run_single_thread(use_random_uid: bool = False, uid: str = "vansh", uid_pool: list = None) -> dict:
     """Run one complete flow."""
     config = APIConfig(
         base_url="https://staging.amuselabs.com/pmm/",
         set_param="pm",
         uid=uid,
         use_random_uid=use_random_uid,
+        uid_pool=uid_pool or [],
         headers={
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
@@ -429,13 +434,13 @@ def run_single_thread(use_random_uid: bool = False, uid: str = "vansh") -> dict:
     return flow.run_sequential_flow()
 
 
-def run_parallel_threads(num_threads: int = 5, use_random_uid: bool = True) -> list[dict]:
+def run_parallel_threads(num_threads: int = 5, use_random_uid: bool = True, uid_pool: list = None) -> list[dict]:
     """Spin up multiple threads, each running its own flow."""
     results = []
     
     with ThreadPoolExecutor(max_workers=num_threads) as executor:
         futures = [
-            executor.submit(run_single_thread, use_random_uid=use_random_uid)
+            executor.submit(run_single_thread, use_random_uid=use_random_uid, uid_pool=uid_pool)
             for _ in range(num_threads)
         ]
         
@@ -451,32 +456,189 @@ def run_parallel_threads(num_threads: int = 5, use_random_uid: bool = True) -> l
     return results
 
 
+def format_results_table(results: list[dict], total_time_ms: float) -> str:
+    """Format results as a table with aggregate stats."""
+    lines = []
+    
+    # header
+    lines.append("")
+    lines.append("=" * 90)
+    lines.append("RESULTS SUMMARY")
+    lines.append("=" * 90)
+    lines.append("")
+    lines.append(f"{'Thread':<8} {'Status':<10} {'UID':<12} {'Step1':<10} {'Step2':<10} {'Step3':<10} {'Step4 Avg':<12} {'Total':<10}")
+    lines.append("-" * 90)
+    
+    all_latencies = []
+    step_latencies = {'step1': [], 'step2': [], 'step3': [], 'step4': []}
+    success_count = 0
+    fail_count = 0
+    
+    for item in results:
+        thread_id = item.get('thread', '-')
+        
+        if 'error' in item:
+            lines.append(f"{thread_id:<8} {'CRASHED':<10} {'-':<12} {'-':<10} {'-':<10} {'-':<10} {'-':<12} {'-':<10}")
+            fail_count += 1
+            continue
+        
+        result = item.get('result', {})
+        success = result.get('success', False)
+        
+        if not success:
+            uid = result.get('step1', {}).get('uid', '-')
+            lines.append(f"{thread_id:<8} {'FAILED':<10} {uid:<12} {'-':<10} {'-':<10} {'-':<10} {'-':<12} {'-':<10}")
+            fail_count += 1
+            continue
+        
+        success_count += 1
+        
+        s1 = result.get('step1', {})
+        s2 = result.get('step2', {})
+        s3 = result.get('step3', {})
+        s4 = result.get('step4', {})
+        
+        uid = s1.get('uid', '-')[:10]  # truncate long uids
+        l1 = s1.get('latency_ms', 0)
+        l2 = s2.get('latency_ms', 0)
+        l3 = s3.get('latency_ms', 0)
+        
+        # step4 has multiple iterations, compute average
+        s4_iterations = s4.get('iterations', [])
+        s4_latencies = [it.get('latency_ms', 0) for it in s4_iterations]
+        l4_avg = sum(s4_latencies) / len(s4_latencies) if s4_latencies else 0
+        l4_total = sum(s4_latencies)
+        
+        total_latency = l1 + l2 + l3 + l4_total
+        all_latencies.append(total_latency)
+        
+        step_latencies['step1'].append(l1)
+        step_latencies['step2'].append(l2)
+        step_latencies['step3'].append(l3)
+        step_latencies['step4'].extend(s4_latencies)
+        
+        lines.append(f"{thread_id:<8} {'OK':<10} {uid:<12} {l1:<10.1f} {l2:<10.1f} {l3:<10.1f} {l4_avg:<12.1f} {total_latency:<10.1f}")
+    
+    # aggregate stats
+    lines.append("-" * 90)
+    lines.append("")
+    lines.append("AGGREGATE STATISTICS")
+    lines.append("-" * 40)
+    lines.append(f"  Total Threads:     {len(results)}")
+    lines.append(f"  Successful:        {success_count}")
+    lines.append(f"  Failed/Crashed:    {fail_count}")
+    lines.append(f"  Total Wall Time:   {total_time_ms:.1f} ms ({total_time_ms/1000:.2f} s)")
+    
+    if all_latencies:
+        lines.append("")
+        lines.append("  Per-Thread Latency (sum of all steps):")
+        lines.append(f"    Min:    {min(all_latencies):.1f} ms")
+        lines.append(f"    Max:    {max(all_latencies):.1f} ms")
+        lines.append(f"    Avg:    {sum(all_latencies)/len(all_latencies):.1f} ms")
+    
+    if step_latencies['step1']:
+        lines.append("")
+        lines.append("  Per-Step Averages (across all threads):")
+        for step, lats in step_latencies.items():
+            if lats:
+                lines.append(f"    {step}: {sum(lats)/len(lats):.1f} ms avg")
+    
+    lines.append("")
+    lines.append("=" * 90)
+    
+    return "\n".join(lines)
+
+
+def format_single_result(result: dict, total_time_ms: float) -> str:
+    """Format a single run result."""
+    lines = []
+    
+    lines.append("")
+    lines.append("=" * 60)
+    lines.append("RESULTS SUMMARY")
+    lines.append("=" * 60)
+    
+    if not result.get('success'):
+        lines.append(f"  Status: FAILED")
+        lines.append(f"  Error: {result.get('error', 'unknown')}")
+    else:
+        s1 = result.get('step1', {})
+        s2 = result.get('step2', {})
+        s3 = result.get('step3', {})
+        s4 = result.get('step4', {})
+        
+        lines.append(f"  Status: OK")
+        lines.append(f"  UID: {s1.get('uid', '-')}")
+        lines.append(f"  Puzzle ID: {s3.get('puzzle_id', '-')}")
+        lines.append("")
+        lines.append("  Step Latencies:")
+        lines.append(f"    Step 1 (date-picker):      {s1.get('latency_ms', 0):.1f} ms")
+        lines.append(f"    Step 2 (postPickerStatus): {s2.get('latency_ms', 0):.1f} ms")
+        lines.append(f"    Step 3 (load crossword):   {s3.get('latency_ms', 0):.1f} ms")
+        
+        s4_iterations = s4.get('iterations', [])
+        if s4_iterations:
+            s4_latencies = [it.get('latency_ms', 0) for it in s4_iterations]
+            lines.append(f"    Step 4 (10 play posts):    {sum(s4_latencies):.1f} ms total, {sum(s4_latencies)/len(s4_latencies):.1f} ms avg")
+        
+        total_api = sum([
+            s1.get('latency_ms', 0),
+            s2.get('latency_ms', 0),
+            s3.get('latency_ms', 0),
+            sum(it.get('latency_ms', 0) for it in s4_iterations)
+        ])
+        lines.append("")
+        lines.append(f"  Total API Time:    {total_api:.1f} ms")
+    
+    lines.append(f"  Total Wall Time:   {total_time_ms:.1f} ms ({total_time_ms/1000:.2f} s)")
+    lines.append("=" * 60)
+    
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     import argparse
     
     parser = argparse.ArgumentParser(description="Performance Testing")
     parser.add_argument("--random-uid", action="store_true", help="generate random uid for each run")
-    parser.add_argument("--uid", type=str, default="vansh", help="uid to use (ignored if --random-uid)")
+    parser.add_argument("--uid", type=str, default="vansh", help="uid to use (ignored if --random-uid or --uid-pool-size)")
+    parser.add_argument("--uid-pool-size", type=int, default=0, help="size of UID pool to pick from randomly (simulates repeat users)")
     parser.add_argument("--parallel", type=int, default=0, help="number of parallel threads (0 = single)")
     
     args = parser.parse_args()
+    
+    # generate UID pool if requested
+    uid_pool = None
+    if args.uid_pool_size > 0:
+        uid_pool = [generate_random_uid() for _ in range(args.uid_pool_size)]
+        print(f"Generated UID pool of {len(uid_pool)} users: {uid_pool[:5]}{'...' if len(uid_pool) > 5 else ''}")
     
     if args.parallel > 0:
         print("=" * 60)
         print(f"Running {args.parallel} parallel threads...")
         print("=" * 60 + "\n")
         
+        start_time = time.perf_counter()
         results = run_parallel_threads(
             num_threads=args.parallel,
             use_random_uid=args.random_uid,
+            uid_pool=uid_pool,
         )
+        total_time_ms = (time.perf_counter() - start_time) * 1000
+        
+        print(format_results_table(results, total_time_ms))
         
     else:
         print("=" * 60)
         print("Running single thread...")
         print("=" * 60 + "\n")
         
+        start_time = time.perf_counter()
         result = run_single_thread(
             use_random_uid=args.random_uid,
             uid=args.uid,
+            uid_pool=uid_pool,
         )
+        total_time_ms = (time.perf_counter() - start_time) * 1000
+        
+        print(format_single_result(result, total_time_ms))
