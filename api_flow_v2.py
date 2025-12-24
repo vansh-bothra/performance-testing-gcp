@@ -619,6 +619,146 @@ def save_results_to_csv(run_data: dict, output_path: str) -> str:
     return filepath
 
 
+def format_results_table(results: list[dict], total_time_ms: float) -> str:
+    """Format results as a table with aggregate stats."""
+    lines = []
+    
+    # header
+    lines.append("")
+    lines.append("=" * 90)
+    lines.append("RESULTS SUMMARY")
+    lines.append("=" * 90)
+    lines.append("")
+    lines.append(f"{'Thread':<8} {'Status':<10} {'UID':<12} {'Step1':<10} {'Step2':<10} {'Step3':<10} {'Step4 Avg':<12} {'Total':<10}")
+    lines.append("-" * 90)
+    
+    all_latencies = []
+    step_latencies = {'step1': [], 'step2': [], 'step3': [], 'step4': []}
+    success_count = 0
+    fail_count = 0
+    
+    for item in results:
+        thread_id = item.get('thread', '-')
+        
+        if 'error' in item:
+            lines.append(f"{thread_id:<8} {'CRASHED':<10} {'-':<12} {'-':<10} {'-':<10} {'-':<10} {'-':<12} {'-':<10}")
+            fail_count += 1
+            continue
+        
+        result = item.get('result', {})
+        success = result.get('success', False)
+        
+        if not success:
+            uid = result.get('step1', {}).get('uid', '-')
+            lines.append(f"{thread_id:<8} {'FAILED':<10} {uid:<12} {'-':<10} {'-':<10} {'-':<10} {'-':<12} {'-':<10}")
+            fail_count += 1
+            continue
+        
+        success_count += 1
+        
+        s1 = result.get('step1', {})
+        s2 = result.get('step2', {})
+        s3 = result.get('step3', {})
+        s4 = result.get('step4', {})
+        
+        uid = s1.get('uid', '-')[:10]  # truncate long uids
+        l1 = s1.get('latency_ms', 0)
+        l2 = s2.get('latency_ms', 0)
+        l3 = s3.get('latency_ms', 0)
+        
+        # step4 has multiple iterations, compute average
+        s4_iterations = s4.get('iterations', [])
+        s4_latencies = [it.get('latency_ms', 0) for it in s4_iterations]
+        l4_avg = sum(s4_latencies) / len(s4_latencies) if s4_latencies else 0
+        l4_total = sum(s4_latencies)
+        
+        total_latency = l1 + l2 + l3 + l4_total
+        all_latencies.append(total_latency)
+        
+        step_latencies['step1'].append(l1)
+        step_latencies['step2'].append(l2)
+        step_latencies['step3'].append(l3)
+        step_latencies['step4'].extend(s4_latencies)
+        
+        lines.append(f"{thread_id:<8} {'OK':<10} {uid:<12} {l1:<10.1f} {l2:<10.1f} {l3:<10.1f} {l4_avg:<12.1f} {total_latency:<10.1f}")
+    
+    # aggregate stats
+    lines.append("-" * 90)
+    lines.append("")
+    lines.append("AGGREGATE STATISTICS")
+    lines.append("-" * 40)
+    lines.append(f"  Total Threads:     {len(results)}")
+    lines.append(f"  Successful:        {success_count}")
+    lines.append(f"  Failed/Crashed:    {fail_count}")
+    lines.append(f"  Total Wall Time:   {total_time_ms:.1f} ms ({total_time_ms/1000:.2f} s)")
+    
+    if all_latencies:
+        lines.append("")
+        lines.append("  Per-Thread Latency (sum of all steps):")
+        lines.append(f"    Min:    {min(all_latencies):.1f} ms")
+        lines.append(f"    Max:    {max(all_latencies):.1f} ms")
+        lines.append(f"    Avg:    {sum(all_latencies)/len(all_latencies):.1f} ms")
+    
+    if step_latencies['step1']:
+        lines.append("")
+        lines.append("  Per-Step Averages (across all threads):")
+        for step, lats in step_latencies.items():
+            if lats:
+                lines.append(f"    {step}: {sum(lats)/len(lats):.1f} ms avg")
+    
+    lines.append("")
+    lines.append("=" * 90)
+    
+    return "\n".join(lines)
+
+
+def format_single_result(result: dict, total_time_ms: float) -> str:
+    """Format a single run result."""
+    lines = []
+    
+    lines.append("")
+    lines.append("=" * 60)
+    lines.append("RESULTS SUMMARY")
+    lines.append("=" * 60)
+    
+    if not result.get('success'):
+        lines.append(f"  Status: FAILED")
+        lines.append(f"  Error: {result.get('error', 'unknown')}")
+    else:
+        s1 = result.get('step1', {})
+        s2 = result.get('step2', {})
+        s3 = result.get('step3', {})
+        s4 = result.get('step4', {})
+        
+        lines.append(f"  Status: OK")
+        lines.append(f"  UID: {s1.get('uid', '-')}")
+        lines.append(f"  Puzzle ID: {s3.get('puzzle_id', '-')}")
+        lines.append("")
+        lines.append("  Step Latencies:")
+        lines.append(f"    Step 1 (date-picker):      {s1.get('latency_ms', 0):.1f} ms")
+        lines.append(f"    Step 2 (postPickerStatus): {s2.get('latency_ms', 0):.1f} ms")
+        lines.append(f"    Step 3 (load crossword):   {s3.get('latency_ms', 0):.1f} ms")
+        
+        s4_iterations = s4.get('iterations', [])
+        if s4_iterations:
+            s4_latencies = [it.get('latency_ms', 0) for it in s4_iterations]
+            lines.append(f"    Step 4 (10 play posts):    {sum(s4_latencies):.1f} ms total, {sum(s4_latencies)/len(s4_latencies):.1f} ms avg")
+        
+        total_api = sum([
+            s1.get('latency_ms', 0),
+            s2.get('latency_ms', 0),
+            s3.get('latency_ms', 0),
+            sum(it.get('latency_ms', 0) for it in s4_iterations)
+        ])
+        lines.append("")
+        lines.append(f"  Total API Time:    {total_api:.1f} ms")
+    
+    lines.append(f"  Total Wall Time:   {total_time_ms:.1f} ms ({total_time_ms/1000:.2f} s)")
+    lines.append("=" * 60)
+    
+    return "\n".join(lines)
+
+
 if __name__ == "__main__":
     import argparse
     
@@ -631,6 +771,7 @@ if __name__ == "__main__":
     parser.add_argument("--duration", type=int, default=1, help="duration in seconds (wave mode)")
     parser.add_argument("--title", type=str, default="", help="title for this test run")
     parser.add_argument("--output", type=str, default="", help="output path for CSV results")
+    parser.add_argument("--html", action="store_true", help="generate HTML dashboard after saving CSV")
     
     args = parser.parse_args()
     
@@ -679,6 +820,13 @@ if __name__ == "__main__":
         if args.output:
             filepath = save_results_to_csv(run_data, args.output)
             print(f"\nResults saved to: {filepath}")
+            
+            # generate HTML if requested
+            if args.html:
+                import subprocess
+                html_path = filepath.replace('.csv', '.html')
+                subprocess.run(['python3', 'view_results.py', filepath, '-o', html_path], check=True)
+                print(f"HTML dashboard: {html_path}")
     
     elif args.parallel > 0:
         print("=" * 60)
@@ -693,8 +841,7 @@ if __name__ == "__main__":
         )
         total_time_ms = (time.perf_counter() - start_time) * 1000
         
-        success = sum(1 for r in results if r.get('result', {}).get('success'))
-        print(f"\nCompleted: {success}/{len(results)} successful in {total_time_ms:.0f}ms")
+        print(format_results_table(results, total_time_ms))
         
     else:
         print("=" * 60)
@@ -709,5 +856,5 @@ if __name__ == "__main__":
         )
         total_time_ms = (time.perf_counter() - start_time) * 1000
         
-        print(f"\nCompleted in {total_time_ms:.0f}ms - {'OK' if result.get('success') else 'FAILED'}")
+        print(format_single_result(result, total_time_ms))
 
