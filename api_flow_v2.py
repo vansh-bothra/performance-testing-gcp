@@ -515,7 +515,11 @@ def run_wave_execution(
         if verbose:
             print(f"  Wave {wave_num + 1} complete: {len(successful)}/{len(wave_results)} success, {wave_duration_ms:.0f}ms")
         elif (wave_num + 1) % 50 == 0:
-            print(f"Completed {wave_num + 1}/{duration} waves...")
+            # Calculate average latency for last 50 waves
+            last_50_waves = waves[-50:]
+            last_50_avgs = [w.get('avg', 0) for w in last_50_waves if w.get('avg')]
+            avg_last_50 = sum(last_50_avgs) / len(last_50_avgs) if last_50_avgs else 0
+            print(f"Completed {wave_num + 1}/{duration} waves... (avg latency last 50: {avg_last_50:.0f}ms)")
         
         if wave_num < duration - 1:
             elapsed = time.perf_counter() - wave_start
