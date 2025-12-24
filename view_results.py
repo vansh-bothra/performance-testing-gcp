@@ -673,20 +673,22 @@ def generate_html(csv_path: str, rows: list[dict], stats: dict) -> str:
         
         // Thread completion time line chart
         const threadWaves = {json.dumps(thread_waves)};
-        new Chart(document.getElementById('threadChart'), {{
+        const threadData = {json.dumps(thread_latencies)};
+        let activePoint = null;
+        const threadChart = new Chart(document.getElementById('threadChart'), {{
             type: 'line',
             data: {{
                 labels: {json.dumps(list(range(1, len(thread_latencies) + 1)))},
                 datasets: [{{
                     label: 'Completion Time (ms)',
-                    data: {json.dumps(thread_latencies)},
+                    data: threadData,
                     borderColor: '#58a6ff',
                     backgroundColor: 'rgba(88, 166, 255, 0.1)',
                     fill: true,
                     pointRadius: 0,
                     pointHoverRadius: 6,
-                    pointHoverBackgroundColor: '#58a6ff',
-                    pointHoverBorderColor: '#fff',
+                    pointHoverBackgroundColor: '#ffffff',
+                    pointHoverBorderColor: '#58a6ff',
                     pointHoverBorderWidth: 2,
                     tension: 0.1
                 }}]
@@ -700,17 +702,26 @@ def generate_html(csv_path: str, rows: list[dict], stats: dict) -> str:
                 plugins: {{
                     legend: {{ display: false }},
                     tooltip: {{
-                        callbacks: {{
-                            title: function(context) {{
-                                const idx = context[0].dataIndex;
-                                return `Thread #${{idx + 1}}`;
-                            }},
-                            label: function(context) {{
-                                const idx = context.dataIndex;
-                                const wave = threadWaves[idx];
-                                const time = context.parsed.y.toFixed(0);
-                                return [`Completion: ${{time}} ms`, `Wave: ${{wave}}`];
+                        enabled: false,
+                        external: function(context) {{
+                            if (activePoint === null) return;
+                            
+                            let tooltipEl = document.getElementById('chartjs-tooltip');
+                            if (!tooltipEl) {{
+                                tooltipEl = document.createElement('div');
+                                tooltipEl.id = 'chartjs-tooltip';
+                                tooltipEl.style.cssText = 'background: #21262d; border: 1px solid #30363d; border-radius: 6px; padding: 8px 12px; position: absolute; pointer-events: none; font-size: 13px; color: #c9d1d9; z-index: 100;';
+                                document.body.appendChild(tooltipEl);
                             }}
+                            
+                            const idx = activePoint.index;
+                            const wave = threadWaves[idx];
+                            const time = threadData[idx].toFixed(0);
+                            
+                            tooltipEl.innerHTML = `<strong>Thread #${{idx + 1}}</strong><br>Completion: ${{time}} ms<br>Wave: ${{wave}}`;
+                            tooltipEl.style.left = activePoint.x + 'px';
+                            tooltipEl.style.top = (activePoint.y - 60) + 'px';
+                            tooltipEl.style.display = 'block';
                         }}
                     }}
                 }},
@@ -723,7 +734,34 @@ def generate_html(csv_path: str, rows: list[dict], stats: dict) -> str:
                         beginAtZero: true,
                         title: {{ display: true, text: 'Latency (ms)' }}
                     }}
+                }},
+                onClick: function(evt, elements) {{
+                    const tooltipEl = document.getElementById('chartjs-tooltip');
+                    if (elements.length > 0) {{
+                        const el = elements[0];
+                        // Toggle off if clicking same point
+                        if (activePoint && activePoint.index === el.index) {{
+                            activePoint = null;
+                            if (tooltipEl) tooltipEl.style.display = 'none';
+                            return;
+                        }}
+                        const pos = el.element;
+                        activePoint = {{ index: el.index, x: pos.x + this.canvas.offsetLeft, y: pos.y + this.canvas.offsetTop }};
+                        this.options.plugins.tooltip.external({{ chart: this }});
+                    }} else {{
+                        activePoint = null;
+                        if (tooltipEl) tooltipEl.style.display = 'none';
+                    }}
                 }}
+            }}
+        }});
+        
+        // Hide tooltip when clicking elsewhere
+        document.addEventListener('click', function(e) {{
+            if (!e.target.closest('#threadChart')) {{
+                const tooltipEl = document.getElementById('chartjs-tooltip');
+                if (tooltipEl) tooltipEl.style.display = 'none';
+                activePoint = null;
             }}
         }});
         
