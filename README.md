@@ -38,7 +38,7 @@ python api_flow.py --rps 30 --duration 5 --title "Baseline Test" --output result
 ### View Results
 Generate HTML dashboard from CSV:
 ```bash
-python view_results.py results/2024-12-24_Baseline_Test.csv --open
+python view_results.py results/2025-12-24_Baseline_Test.csv --open
 ```
 
 ## CLI Options
