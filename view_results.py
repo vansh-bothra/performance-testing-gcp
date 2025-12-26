@@ -25,6 +25,31 @@ def load_csv(filepath: str) -> list[dict]:
         return list(reader)
 
 
+def load_timestamps_csv(filepath: str) -> dict:
+    """Load timestamps CSV and return dict keyed by (wave, thread) -> list of step timestamps."""
+    # Try to find the timestamps file
+    timestamps_path = filepath.replace('.csv', '_timestamps.csv')
+    if not os.path.exists(timestamps_path):
+        return {}
+    
+    timestamps = {}
+    with open(timestamps_path, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            key = (row.get('wave', ''), row.get('thread', ''))
+            if key not in timestamps:
+                timestamps[key] = []
+            timestamps[key].append({
+                'step': row.get('step', ''),
+                'substep': row.get('substep', ''),
+                'start_ts': row.get('start_ts', ''),
+                'end_ts': row.get('end_ts', ''),
+                'error': row.get('error', ''),
+            })
+    
+    return timestamps
+
+
 def compute_stats(rows: list[dict]) -> dict:
     """Compute aggregate statistics from result rows."""
     # group by wave
@@ -135,7 +160,7 @@ def find_outliers(latencies: list[float], stdev: float, avg: float) -> set[int]:
     return {i for i, lat in enumerate(latencies) if lat > threshold}
 
 
-def generate_html(csv_path: str, rows: list[dict], stats: dict) -> str:
+def generate_html(csv_path: str, rows: list[dict], stats: dict, timestamps: dict = None) -> str:
     """Generate HTML dashboard string with charts."""
     import json
     
@@ -220,6 +245,27 @@ def generate_html(csv_path: str, rows: list[dict], stats: dict) -> str:
             row_class = 'outlier' if is_outlier else ('failure' if not is_success else '')
             hidden_class = 'hidden-row' if i >= 10 else ''
             
+            # Get timestamps for this thread if available
+            wave_num_str = str(wave['wave'])
+            thread_num_str = str(r.get('thread', i))
+            thread_timestamps = timestamps.get((wave_num_str, thread_num_str), []) if timestamps else []
+            
+            # Format timestamps for display (hidden by default)
+            ts_cells = ''
+            if thread_timestamps:
+                for ts in thread_timestamps:
+                    step = ts.get('step', '')
+                    substep = ts.get('substep', '')
+                    step_label = f"{step}" if not substep else f"{step}.{substep}"
+                    start = ts.get('start_ts', '')[-12:] if ts.get('start_ts') else '-'  # Show time portion
+                    end = ts.get('end_ts', '')[-12:] if ts.get('end_ts') else '-'
+                    ts_cells += f'<tr class="timestamp-row hidden-timestamp" data-ts-wave-{wave["wave"]}><td colspan="2"></td><td>{step_label}</td><td colspan="2">{start}</td><td colspan="2">{end}</td><td colspan="2"></td></tr>'
+            
+            # Error with full tooltip on hover
+            error_text = r.get('error', '') if not is_success else ''
+            error_display = error_text[:30] + '...' if len(error_text) > 30 else error_text
+            error_cell = f'<td class="error-cell" title="{error_text}">{error_display}</td>' if error_text else '<td class="error-cell"></td>'
+            
             thread_rows_html.append(f"""
                 <tr class="{row_class} {hidden_class}" data-thread-row-{wave['wave']}>
                     <td>{r.get('thread', i)}</td>
@@ -230,16 +276,18 @@ def generate_html(csv_path: str, rows: list[dict], stats: dict) -> str:
                     <td>{r.get('step3_ms', '-')}</td>
                     <td>{r.get('step4_avg_ms', '-')}</td>
                     <td class="{'outlier-value' if is_outlier else ''}">{r.get('total_ms', '-')}</td>
-                    <td class="error-cell">{r.get('error', '') if not is_success else ''}</td>
+                    {error_cell}
                 </tr>
+                {ts_cells}
             """)
         
         show_more_threads = len(wave_rows) > 10
         toggle_btn = f"""<button class="toggle-btn" onclick="toggleThreadRows({wave['wave']}, this)">Show all ({len(wave_rows)})</button>""" if show_more_threads else ""
+        timestamps_btn = f"""<button class="toggle-btn ts-toggle-btn" onclick="toggleTimestamps({wave['wave']}, this)">Show timestamps</button>""" if timestamps else ""
         
         thread_sections.append(f"""
             <details class="wave-details">
-                <summary>Wave {wave['wave']} - {wave['success']}/{wave['threads']} success {toggle_btn}</summary>
+                <summary>Wave {wave['wave']} - {wave['success']}/{wave['threads']} success {toggle_btn} {timestamps_btn}</summary>
                 <table class="thread-table">
                     <thead>
                         <tr>
@@ -488,15 +536,6 @@ def generate_html(csv_path: str, rows: list[dict], stats: dict) -> str:
             font-weight: 600;
         }}
         
-        .error-cell {{
-            color: var(--danger);
-            font-size: 0.8rem;
-            max-width: 200px;
-            overflow: hidden;
-            text-overflow: ellipsis;
-            white-space: nowrap;
-        }}
-        
         .legend {{
             margin-top: 2rem;
             padding: 1rem;
@@ -522,6 +561,53 @@ def generate_html(csv_path: str, rows: list[dict], stats: dict) -> str:
         
         .legend-color.outlier {{ background: rgba(248, 81, 73, 0.3); }}
         .legend-color.failure {{ background: rgba(248, 81, 73, 0.5); }}
+        
+        .timestamp-row {{
+            background: rgba(88, 166, 255, 0.05);
+            font-size: 0.8rem;
+            color: var(--text-secondary);
+        }}
+        
+        .timestamp-row td {{
+            padding: 0.4rem 1rem;
+            border-bottom: 1px dashed var(--border);
+        }}
+        
+        .hidden-timestamp {{
+            display: none;
+        }}
+        
+        .ts-toggle-btn {{
+            background: rgba(88, 166, 255, 0.1);
+        }}
+        
+        .error-cell {{
+            color: var(--danger);
+            font-size: 0.8rem;
+            max-width: 200px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            cursor: help;
+            position: relative;
+        }}
+        
+        .error-cell[title]:hover::after {{
+            content: attr(title);
+            position: absolute;
+            left: 0;
+            top: 100%;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 8px 12px;
+            color: var(--text-primary);
+            font-size: 0.85rem;
+            white-space: pre-wrap;
+            max-width: 400px;
+            z-index: 1000;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }}
     </style>
 </head>
 <body>
@@ -794,6 +880,16 @@ def generate_html(csv_path: str, rows: list[dict], stats: dict) -> str:
             container.classList.toggle('visible', !isVisible);
             btn.textContent = isVisible ? 'View charts' : 'Hide charts';
         }}
+        
+        function toggleTimestamps(waveNum, btn) {{
+            const rows = document.querySelectorAll(`[data-ts-wave-${{waveNum}}]`);
+            if (rows.length === 0) return;
+            const isHidden = rows[0]?.classList.contains('hidden-timestamp');
+            rows.forEach(row => {{
+                row.classList.toggle('hidden-timestamp', !isHidden);
+            }});
+            btn.textContent = isHidden ? 'Hide timestamps' : 'Show timestamps';
+        }}
     </script>
 </body>
 </html>
@@ -816,9 +912,10 @@ def main():
     # load and process data
     rows = load_csv(args.csv_file)
     stats = compute_stats(rows)
+    timestamps = load_timestamps_csv(args.csv_file)
     
     # generate HTML
-    html = generate_html(args.csv_file, rows, stats)
+    html = generate_html(args.csv_file, rows, stats, timestamps)
     
     # determine output path
     if args.output:
