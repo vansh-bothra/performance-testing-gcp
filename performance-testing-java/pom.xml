@@ -75,13 +75,15 @@
                 </configuration>
             </plugin>
 
-            <!-- Shade Plugin for executable JAR -->
+            <!-- Shade Plugin for executable JARs -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
                 <version>3.5.1</version>
                 <executions>
+                    <!-- V2 JAR -->
                     <execution>
+                        <id>shade-v2</id>
                         <phase>package</phase>
                         <goals>
                             <goal>shade</goal>
@@ -94,6 +96,23 @@
                             </transformers>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
                             <finalName>api-flow-v2</finalName>
+                        </configuration>
+                    </execution>
+                    <!-- V3 JAR (with CDN fetches) -->
+                    <execution>
+                        <id>shade-v3</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.perftest.ApiFlowV3Main</mainClass>
+                                </transformer>
+                            </transformers>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <finalName>api-flow-v3</finalName>
                         </configuration>
                     </execution>
                 </executions>

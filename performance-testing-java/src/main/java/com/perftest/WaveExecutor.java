@@ -19,15 +19,22 @@ public class WaveExecutor {
     private final List<String> uidPool;
     private final String title;
     private final boolean verbose;
+    private final boolean useV3;
 
     public WaveExecutor(int rps, int duration, boolean useRandomUid,
             List<String> uidPool, String title, boolean verbose) {
+        this(rps, duration, useRandomUid, uidPool, title, verbose, false);
+    }
+
+    public WaveExecutor(int rps, int duration, boolean useRandomUid,
+            List<String> uidPool, String title, boolean verbose, boolean useV3) {
         this.rps = rps;
         this.duration = duration;
         this.useRandomUid = useRandomUid;
         this.uidPool = uidPool;
         this.title = title;
         this.verbose = verbose;
+        this.useV3 = useV3;
     }
 
     public Map<String, Object> execute() {
@@ -94,12 +101,22 @@ public class WaveExecutor {
                                     .uidPool(uidPool)
                                     .build();
 
-                            ApiFlow flow = new ApiFlow(config, verbose);
-                            try {
-                                Map<String, Object> result = flow.runSequentialFlow();
-                                threadResult.put("result", result);
-                            } finally {
-                                flow.close();
+                            if (useV3) {
+                                ApiFlowV3 flow = new ApiFlowV3(config, verbose);
+                                try {
+                                    Map<String, Object> result = flow.runSequentialFlow();
+                                    threadResult.put("result", result);
+                                } finally {
+                                    flow.close();
+                                }
+                            } else {
+                                ApiFlow flow = new ApiFlow(config, verbose);
+                                try {
+                                    Map<String, Object> result = flow.runSequentialFlow();
+                                    threadResult.put("result", result);
+                                } finally {
+                                    flow.close();
+                                }
                             }
                         } catch (Exception e) {
                             threadResult.put("error", e.getMessage());

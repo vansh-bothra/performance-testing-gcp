@@ -25,23 +25,36 @@ sdk config  # Set sdkman_auto_env=true
 mvn package -q
 ```
 
+This creates two JARs:
+- `target/api-flow-v2.jar` - Standard flow
+- `target/api-flow-v3.jar` - Flow with CDN resource fetches
+
 ## Usage
 
-### Single Run
+### V2 - Standard Flow
+
 ```bash
+# Single run
 java -jar target/api-flow-v2.jar --uid vansh -v
-java -jar target/api-flow-v2.jar --random-uid -v
+
+# Wave-based load test
+java -jar target/api-flow-v2.jar --rps 5 --duration 10 --random-uid --output results/ --html -v
 ```
 
-### Parallel Execution
-```bash
-java -jar target/api-flow-v2.jar --parallel 10 --random-uid -v
-```
+### V3 - With CDN Fetches
 
-### Wave-Based Load Test (True RPS)
-Launches N threads per second for M seconds. Waves launch at precise 1-second intervals regardless of previous wave completion:
+V3 adds 4 CDN resource fetches to Step 1 (after date-picker):
+- `date-picker-min.css`
+- `picker-min.js`
+- `font-awesome/all.min.css`
+- `font-awesome/fa-solid-900.woff2`
+
 ```bash
-java -jar target/api-flow-v2.jar --rps 5 --duration 10 --title "Test" --output results/ --random-uid --html -v
+# Single run
+java -jar target/api-flow-v3.jar --uid vansh -v
+
+# Wave-based load test  
+java -jar target/api-flow-v3.jar --rps 5 --duration 10 --random-uid --output results/ --html -v
 ```
 
 ## CLI Options
@@ -68,10 +81,12 @@ java -jar target/api-flow-v2.jar --rps 5 --duration 10 --title "Test" --output r
 
 ```
 src/main/java/com/perftest/
-├── ApiFlowV2.java       # Main entry point + CLI
-├── ApiConfig.java       # Configuration
-├── ApiFlow.java         # HTTP flow (4 steps)
-├── WaveExecutor.java    # True RPS wave execution
-├── CsvResultWriter.java # CSV output
+├── ApiFlowV2.java        # V2 Main entry point
+├── ApiFlowV3Main.java    # V3 Main entry point
+├── ApiConfig.java        # Configuration
+├── ApiFlow.java          # V2 HTTP flow (4 steps)
+├── ApiFlowV3.java        # V3 HTTP flow (4 steps + CDN)
+├── WaveExecutor.java     # True RPS wave execution (supports V2/V3)
+├── CsvResultWriter.java  # CSV output
 └── HtmlReportWriter.java # HTML dashboard
 ```
