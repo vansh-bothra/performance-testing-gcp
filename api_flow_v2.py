@@ -141,11 +141,13 @@ class APIFlow:
         
         self._log(f"Step 1: GET /date-picker (uid={uid})")
         
+        start_ts = datetime.now()
         response, latency = self.make_request(
             method="GET",
             endpoint="date-picker",
             params={"set": self.config.set_param, "uid": uid},
         )
+        end_ts = datetime.now()
         response.raise_for_status()
         
         params_json = self.extract_params_from_html(response.text)
@@ -164,7 +166,13 @@ class APIFlow:
         
         self._log(f"  done in {latency:.1f}ms")
         
-        return {'status_code': response.status_code, 'uid': uid, 'latency_ms': latency}
+        return {
+            'status_code': response.status_code,
+            'uid': uid,
+            'latency_ms': latency,
+            'start_ts': start_ts.isoformat(),
+            'end_ts': end_ts.isoformat(),
+        }
     
     # =========================================================================
     # STEP 2: Post picker status
@@ -176,6 +184,7 @@ class APIFlow:
         
         self._log("Step 2: POST /postPickerStatus")
         
+        start_ts = datetime.now()
         response, latency = self.make_request(
             method="POST",
             endpoint="postPickerStatus",
@@ -186,6 +195,7 @@ class APIFlow:
                 "reason": "displaying puzzle picker",
             },
         )
+        end_ts = datetime.now()
         response.raise_for_status()
         
         data = response.json()
@@ -194,7 +204,12 @@ class APIFlow:
         
         self._log(f"  done in {latency:.1f}ms")
         
-        return {'status_code': response.status_code, 'latency_ms': latency}
+        return {
+            'status_code': response.status_code,
+            'latency_ms': latency,
+            'start_ts': start_ts.isoformat(),
+            'end_ts': end_ts.isoformat(),
+        }
     
     # =========================================================================
     # STEP 3: Load the hardcoded crossword puzzle
@@ -214,6 +229,7 @@ class APIFlow:
         
         src_url = f"{self.config.base_url}date-picker?set={self.config.set_param}&uid={uid}"
         
+        start_ts = datetime.now()
         response, latency = self.make_request(
             method="GET",
             endpoint="crossword",
@@ -226,6 +242,7 @@ class APIFlow:
                 "loadToken": load_token,
             },
         )
+        end_ts = datetime.now()
         response.raise_for_status()
         
         crossword_params = self.extract_params_from_html(response.text)
@@ -239,7 +256,13 @@ class APIFlow:
         
         self._log(f"  done in {latency:.1f}ms")
         
-        return {'status_code': response.status_code, 'puzzle_id': puzzle_id, 'latency_ms': latency}
+        return {
+            'status_code': response.status_code,
+            'puzzle_id': puzzle_id,
+            'latency_ms': latency,
+            'start_ts': start_ts.isoformat(),
+            'end_ts': end_ts.isoformat(),
+        }
     
     # =========================================================================
     # STEP 4: Simulate playing - 10 POST calls with hardcoded state length
@@ -343,11 +366,13 @@ class APIFlow:
                 "userId": uid,
             }
             
+            start_ts = datetime.now()
             response, latency = self.make_request(
                 method="POST",
                 endpoint="api/v1/plays",
                 payload=payload,
             )
+            end_ts = datetime.now()
             response.raise_for_status()
             
             data = response.json()
@@ -356,7 +381,13 @@ class APIFlow:
             
             self._log(f"  [{i+1}/10] playState={play_state} - {latency:.1f}ms")
             
-            results.append({'iteration': i + 1, 'play_state': play_state, 'latency_ms': latency})
+            results.append({
+                'iteration': i + 1,
+                'play_state': play_state,
+                'latency_ms': latency,
+                'start_ts': start_ts.isoformat(),
+                'end_ts': end_ts.isoformat(),
+            })
         
         self._log(f"  all done")
         
@@ -515,7 +546,11 @@ def run_wave_execution(
         if verbose:
             print(f"  Wave {wave_num + 1} complete: {len(successful)}/{len(wave_results)} success, {wave_duration_ms:.0f}ms")
         elif (wave_num + 1) % 50 == 0:
-            print(f"Completed {wave_num + 1}/{duration} waves...")
+            # Calculate average latency for last 50 waves
+            last_50_waves = waves[-50:]
+            last_50_avgs = [w.get('avg', 0) for w in last_50_waves if w.get('avg')]
+            avg_last_50 = sum(last_50_avgs) / len(last_50_avgs) if last_50_avgs else 0
+            print(f"Completed {wave_num + 1}/{duration} waves... (avg latency last 50: {avg_last_50:.0f}ms)")
         
         if wave_num < duration - 1:
             elapsed = time.perf_counter() - wave_start
@@ -624,6 +659,111 @@ def save_results_to_csv(run_data: dict, output_path: str) -> str:
         })
     
     fieldnames = ['wave', 'thread', 'uid', 'success', 'error', 'step1_ms', 'step2_ms', 'step3_ms', 'step4_avg_ms', 'step4_total_ms', 'total_ms']
+    
+    with open(filepath, 'w', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+    
+    return filepath
+
+
+def save_timestamps_to_csv(run_data: dict, output_path: str) -> str:
+    """Save step-by-step timestamps to a separate CSV file."""
+    title = run_data.get('title', 'run')
+    safe_title = re.sub(r'[^\w\s-]', '', title).replace(' ', '_')
+    
+    timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+    
+    if output_path.endswith('.csv'):
+        # Replace .csv with _timestamps.csv
+        filepath = output_path.replace('.csv', '_timestamps.csv')
+    else:
+        os.makedirs(output_path, exist_ok=True)
+        filename = f"{timestamp}_{safe_title}_v2_timestamps.csv" if safe_title else f"{timestamp}_v2_timestamps.csv"
+        filepath = os.path.join(output_path, filename)
+    
+    rows = []
+    for item in run_data.get('results', []):
+        wave = item.get('wave', 0)
+        thread = item.get('thread', 0)
+        
+        if 'error' in item:
+            # Log error case with empty timestamps
+            rows.append({
+                'wave': wave,
+                'thread': thread,
+                'step': 'error',
+                'substep': '',
+                'start_ts': '',
+                'end_ts': '',
+                'error': item['error'],
+            })
+            continue
+        
+        result = item.get('result', {})
+        if not result.get('success'):
+            rows.append({
+                'wave': wave,
+                'thread': thread,
+                'step': 'error',
+                'substep': '',
+                'start_ts': '',
+                'end_ts': '',
+                'error': result.get('error', 'unknown'),
+            })
+            continue
+        
+        # Step 1
+        s1 = result.get('step1', {})
+        rows.append({
+            'wave': wave,
+            'thread': thread,
+            'step': 'step1',
+            'substep': '',
+            'start_ts': s1.get('start_ts', ''),
+            'end_ts': s1.get('end_ts', ''),
+            'error': '',
+        })
+        
+        # Step 2
+        s2 = result.get('step2', {})
+        rows.append({
+            'wave': wave,
+            'thread': thread,
+            'step': 'step2',
+            'substep': '',
+            'start_ts': s2.get('start_ts', ''),
+            'end_ts': s2.get('end_ts', ''),
+            'error': '',
+        })
+        
+        # Step 3
+        s3 = result.get('step3', {})
+        rows.append({
+            'wave': wave,
+            'thread': thread,
+            'step': 'step3',
+            'substep': '',
+            'start_ts': s3.get('start_ts', ''),
+            'end_ts': s3.get('end_ts', ''),
+            'error': '',
+        })
+        
+        # Step 4 - each substep
+        s4 = result.get('step4', {})
+        for iteration in s4.get('iterations', []):
+            rows.append({
+                'wave': wave,
+                'thread': thread,
+                'step': 'step4',
+                'substep': iteration.get('iteration', ''),
+                'start_ts': iteration.get('start_ts', ''),
+                'end_ts': iteration.get('end_ts', ''),
+                'error': '',
+            })
+    
+    fieldnames = ['wave', 'thread', 'step', 'substep', 'start_ts', 'end_ts', 'error']
     
     with open(filepath, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -839,6 +979,10 @@ if __name__ == "__main__":
         if args.output:
             filepath = save_results_to_csv(run_data, args.output)
             print(f"\nResults saved to: {filepath}")
+            
+            # Save timestamps to separate CSV
+            timestamps_filepath = save_timestamps_to_csv(run_data, args.output)
+            print(f"Timestamps saved to: {timestamps_filepath}")
             
             # generate HTML if requested
             if args.html:
