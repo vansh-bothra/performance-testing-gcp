@@ -39,6 +39,9 @@ java -jar target/api-flow-v2.jar --uid vansh -v
 
 # Wave-based load test
 java -jar target/api-flow-v2.jar --rps 5 --duration 10 --random-uid --output results/ --html -v
+
+# Regenerate HTML from existing CSV
+java -cp target/api-flow-v2.jar com.perftest.HtmlReportGenerator results/your-file.csv
 ```
 
 ### V3 - With CDN Fetches
