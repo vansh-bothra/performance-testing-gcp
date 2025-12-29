@@ -8,6 +8,7 @@ import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.LinkedHashMap;
 import java.util.stream.Collectors;
 
 /**
@@ -27,6 +28,8 @@ public class HtmlReportWriter {
         Map<String, Object> overall = (Map<String, Object>) stats.get("overall");
         List<Map<String, Object>> waveStats = (List<Map<String, Object>>) stats.get("waves");
         List<Double> allLatencies = (List<Double>) stats.get("allLatencies");
+        Map<String, List<Map<String, Object>>> errorGroups = (Map<String, List<Map<String, Object>>>) stats
+                .get("errorGroups");
 
         // Prepare chart data
         List<Double> threadLatencies = new ArrayList<>();
@@ -207,6 +210,107 @@ public class HtmlReportWriter {
                     """, wave.get("wave"), wave.get("success"), wave.get("threads"), toggleBtn, threadRowsHtml));
         }
 
+        // Build error summary sections
+        StringBuilder errorSections = new StringBuilder();
+        int errorGroupIndex = 0;
+        for (Map.Entry<String, List<Map<String, Object>>> errorEntry : errorGroups.entrySet()) {
+            String errorMessage = errorEntry.getKey();
+            List<Map<String, Object>> errorItems = errorEntry.getValue();
+            int errorCount = errorItems.size();
+
+            // Truncate long error messages for display
+            String displayError = errorMessage.length() > 100
+                    ? errorMessage.substring(0, 100) + "..."
+                    : errorMessage;
+
+            StringBuilder errorRowsHtml = new StringBuilder();
+            for (int i = 0; i < errorItems.size(); i++) {
+                Map<String, Object> item = errorItems.get(i);
+                Map<String, Object> r = (Map<String, Object>) item.get("result");
+                int waveNum = (Integer) item.getOrDefault("wave", 1);
+                int threadNum = (Integer) item.getOrDefault("thread", i);
+
+                Map<String, Object> s1 = r != null ? (Map<String, Object>) r.getOrDefault("step1", Map.of()) : Map.of();
+                Map<String, Object> s2 = r != null ? (Map<String, Object>) r.getOrDefault("step2", Map.of()) : Map.of();
+                Map<String, Object> s3 = r != null ? (Map<String, Object>) r.getOrDefault("step3", Map.of()) : Map.of();
+                Map<String, Object> s4 = r != null ? (Map<String, Object>) r.getOrDefault("step4", Map.of()) : Map.of();
+
+                String uid = (String) s1.getOrDefault("uid", "-");
+                String step1Start = CsvResultWriter.formatTimestamp(s1.get("start_timestamp"));
+                String step1Ms = String.format("%.1f", s1.getOrDefault("latency_ms", 0.0));
+                String step2Ms = String.format("%.1f", s2.getOrDefault("latency_ms", 0.0));
+                String step3Ms = String.format("%.1f", s3.getOrDefault("latency_ms", 0.0));
+
+                List<Map<String, Object>> iterations = (List<Map<String, Object>>) s4.getOrDefault("iterations",
+                        List.of());
+                double s4Avg = 0;
+                if (!iterations.isEmpty()) {
+                    double s4Total = iterations.stream()
+                            .mapToDouble(it -> (Double) it.getOrDefault("latency_ms", 0.0))
+                            .sum();
+                    s4Avg = s4Total / iterations.size();
+                }
+                String step4AvgMs = String.format("%.1f", s4Avg);
+
+                String failedStep = r != null ? (String) r.getOrDefault("failed_step", "-") : "-";
+                String hiddenClass = i >= 10 ? "hidden-row" : "";
+
+                errorRowsHtml.append(String.format("""
+                        <tr class="failure %s" data-error-row-%d>
+                            <td>%d</td>
+                            <td>%d</td>
+                            <td>%s</td>
+                            <td class="timestamp-cell">%s</td>
+                            <td>%s</td>
+                            <td>%s</td>
+                            <td>%s</td>
+                            <td>%s</td>
+                            <td>%s</td>
+                        </tr>
+                        """, hiddenClass, errorGroupIndex,
+                        waveNum, threadNum, uid, step1Start,
+                        step1Ms, step2Ms, step3Ms, step4AvgMs, failedStep));
+            }
+
+            boolean showMoreErrors = errorItems.size() > 10;
+            String errorToggleBtn = showMoreErrors ? String.format(
+                    "<button class=\"toggle-btn\" onclick=\"toggleErrorRows(%d, this)\">Show all (%d)</button>",
+                    errorGroupIndex, errorItems.size()) : "";
+
+            errorSections.append(String.format("""
+                    <details class="error-details">
+                        <summary>
+                            <span class="error-count">%d</span>
+                            <span class="error-message" title="%s">%s</span>
+                            %s
+                        </summary>
+                        <table class="thread-table error-table">
+                            <thead>
+                                <tr>
+                                    <th>Wave</th>
+                                    <th>Thread</th>
+                                    <th>UID</th>
+                                    <th>Start Time</th>
+                                    <th>Step1 (ms)</th>
+                                    <th>Step2 (ms)</th>
+                                    <th>Step3 (ms)</th>
+                                    <th>Step4 Avg (ms)</th>
+                                    <th>Failed Step</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                %s
+                            </tbody>
+                        </table>
+                    </details>
+                    """, errorCount,
+                    errorMessage.replace("\"", "&quot;"),
+                    displayError.replace("<", "&lt;").replace(">", "&gt;"),
+                    errorToggleBtn, errorRowsHtml));
+
+            errorGroupIndex++;
+        }
+
         boolean showMoreWaves = waveStats.size() > 10;
         String showMoreBtn = showMoreWaves
                 ? String.format("<button class=\"toggle-btn\" onclick=\"toggleWaveRows(this)\">Show all (%d)</button>",
@@ -224,7 +328,9 @@ public class HtmlReportWriter {
                 threadLatencies, threadWaves,
                 waveTableRows.toString(), showMoreBtn,
                 threadSections.toString(),
-                waveStats.size());
+                waveStats.size(),
+                errorSections.toString(),
+                errorGroups.size());
     }
 
     @SuppressWarnings("unchecked")
@@ -339,10 +445,32 @@ public class HtmlReportWriter {
             overall.put("p95", 0.0);
         }
 
+        // Group errors by message
+        Map<String, List<Map<String, Object>>> errorGroups = new LinkedHashMap<>();
+        for (Map<String, Object> item : results) {
+            Map<String, Object> result = (Map<String, Object>) item.get("result");
+            if (result != null && !Boolean.TRUE.equals(result.get("success"))) {
+                String error = (String) result.getOrDefault("error", "Unknown error");
+                if (error == null || error.isEmpty()) {
+                    error = "Unknown error";
+                }
+                errorGroups.computeIfAbsent(error, k -> new ArrayList<>()).add(item);
+            }
+        }
+
+        // Sort by count descending
+        List<Map.Entry<String, List<Map<String, Object>>>> sortedErrors = new ArrayList<>(errorGroups.entrySet());
+        sortedErrors.sort((a, b) -> Integer.compare(b.getValue().size(), a.getValue().size()));
+        Map<String, List<Map<String, Object>>> sortedErrorGroups = new LinkedHashMap<>();
+        for (Map.Entry<String, List<Map<String, Object>>> entry : sortedErrors) {
+            sortedErrorGroups.put(entry.getKey(), entry.getValue());
+        }
+
         Map<String, Object> stats = new HashMap<>();
         stats.put("waves", waveStats);
         stats.put("overall", overall);
         stats.put("allLatencies", allLatencies);
+        stats.put("errorGroups", sortedErrorGroups);
         return stats;
     }
 
@@ -384,7 +512,8 @@ public class HtmlReportWriter {
             List<String> waveLabels, List<Double> waveAvgs,
             List<Double> threadLatencies, List<Integer> threadWaves,
             String waveTableRows, String showMoreBtn,
-            String threadSections, int waveCount) {
+            String threadSections, int waveCount,
+            String errorSections, int errorGroupCount) {
 
         List<Integer> threadIndices = new ArrayList<>();
         for (int i = 1; i <= threadLatencies.size(); i++)
@@ -539,6 +668,52 @@ public class HtmlReportWriter {
                                 .legend-color { display: inline-block; width: 12px; height: 12px; border-radius: 2px; margin-right: 0.5rem; vertical-align: middle; }
                                 .legend-color.outlier { background: rgba(248, 81, 73, 0.3); }
                                 .legend-color.failure { background: rgba(248, 81, 73, 0.5); }
+
+                                /* Error Summary Section */
+                                .error-summary { margin-top: 2rem; }
+                                .error-details { margin-bottom: 0.75rem; }
+                                .error-details summary {
+                                    cursor: pointer;
+                                    padding: 0.75rem 1rem;
+                                    background: var(--bg-secondary);
+                                    border: 1px solid var(--border);
+                                    border-left: 4px solid var(--danger);
+                                    border-radius: 8px;
+                                    font-weight: 500;
+                                    display: flex;
+                                    align-items: center;
+                                    gap: 1rem;
+                                }
+                                .error-details summary:hover { background: var(--bg-tertiary); }
+                                .error-details[open] summary { border-radius: 8px 8px 0 0; border-bottom: none; }
+                                .error-count {
+                                    background: var(--danger);
+                                    color: var(--bg-primary);
+                                    padding: 0.25rem 0.6rem;
+                                    border-radius: 12px;
+                                    font-size: 0.85rem;
+                                    font-weight: 600;
+                                    min-width: 2rem;
+                                    text-align: center;
+                                }
+                                .error-message {
+                                    color: var(--text-primary);
+                                    font-family: 'Monaco', 'Menlo', monospace;
+                                    font-size: 0.85rem;
+                                    flex: 1;
+                                    overflow: hidden;
+                                    text-overflow: ellipsis;
+                                    white-space: nowrap;
+                                }
+                                .error-table { border-radius: 0 0 8px 8px; }
+                                .no-errors {
+                                    padding: 2rem;
+                                    text-align: center;
+                                    color: var(--success);
+                                    background: var(--bg-secondary);
+                                    border-radius: 8px;
+                                    border: 1px solid var(--border);
+                                }
                             </style>
                         </head>
                         <body>
@@ -616,6 +791,13 @@ public class HtmlReportWriter {
                                     <h2>Thread Details (click to expand)</h2>
                                 </div>
                                 %s
+
+                                <div class="section-header">
+                                    <h2>Error Summary</h2>
+                                </div>
+                                <div class="error-summary">
+                                    %s
+                                </div>
 
                                 <div class="legend">
                                     <span class="legend-item"><span class="legend-color outlier"></span> Outlier (>2σ from mean)</span>
@@ -712,6 +894,14 @@ public class HtmlReportWriter {
                                     btn.textContent = isHidden ? 'Show less' : `Show all (${rows.length})`;
                                 }
 
+                                function toggleErrorRows(groupIndex, btn) {
+                                    const rows = document.querySelectorAll(`[data-error-row-${groupIndex}]`);
+                                    const hiddenRows = Array.from(rows).filter((_, i) => i >= 10);
+                                    const isHidden = hiddenRows[0]?.classList.contains('hidden-row');
+                                    hiddenRows.forEach(row => row.classList.toggle('hidden-row', !isHidden));
+                                    btn.textContent = isHidden ? 'Show less' : `Show all (${rows.length})`;
+                                }
+
                                 function toggleCharts(btn) {
                                     const container = document.getElementById('chartsContainer');
                                     const isVisible = container.classList.contains('visible');
@@ -729,6 +919,7 @@ public class HtmlReportWriter {
                 overall.getOrDefault("p95", 0.0),
                 overall.getOrDefault("min", 0.0), overall.getOrDefault("max", 0.0),
                 showMoreBtn, waveTableRows, threadSections,
+                errorGroupCount > 0 ? errorSections : "<div class=\"no-errors\">✓ No errors recorded</div>",
                 toJson(histogramLabels), toJson(histogramBins),
                 toJson(waveLabels), toJson(waveAvgs),
                 toJson(threadWaves), toJson(threadLatencies),
