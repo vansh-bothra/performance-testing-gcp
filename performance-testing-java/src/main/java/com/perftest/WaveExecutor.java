@@ -52,7 +52,7 @@ public class WaveExecutor {
         // Shared thread pool for ALL API calls - large enough to handle overlapping
         // waves
         // Max concurrent = rps * avg_completion_time_in_seconds (e.g., 5 * 4 = 20)
-        ExecutorService workerPool = Executors.newFixedThreadPool(rps * 5); // 5x for safety margin
+        ExecutorService workerPool = Executors.newFixedThreadPool(rps * 8); // 5x for safety margin
 
         // Scheduler to launch waves every second
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
@@ -65,7 +65,17 @@ public class WaveExecutor {
 
         // Counter for progress tracking
         AtomicInteger wavesLaunched = new AtomicInteger(0);
+        AtomicInteger wavesCompleted = new AtomicInteger(0);
         AtomicInteger completedCount = new AtomicInteger(0);
+
+        // Track wave thread completion counts
+        Map<Integer, AtomicInteger> waveThreadCounts = new ConcurrentHashMap<>();
+        for (int w = 1; w <= duration; w++) {
+            waveThreadCounts.put(w, new AtomicInteger(0));
+        }
+
+        // Track latencies for completed waves (for progress reporting)
+        List<Double> recentLatencies = Collections.synchronizedList(new ArrayList<>());
 
         long overallStart = System.nanoTime();
 
@@ -124,11 +134,32 @@ public class WaveExecutor {
 
                         threadResult.put("completion_time", System.currentTimeMillis());
 
-                        // Progress tracking
-                        int completed = completedCount.incrementAndGet();
-                        if (!verbose && completed % 50 == 0) {
-                            System.out.printf("Completed %d/%d threads...%n", completed, totalThreads);
+                        // Track wave completion and calculate latency
+                        @SuppressWarnings("unchecked")
+                        Map<String, Object> result = (Map<String, Object>) threadResult.get("result");
+                        if (result != null && Boolean.TRUE.equals(result.get("success"))) {
+                            double latency = calculateTotalLatency(result);
+                            recentLatencies.add(latency);
                         }
+
+                        // Check if this wave is complete
+                        int waveCompleteCount = waveThreadCounts.get(waveNum).incrementAndGet();
+                        if (waveCompleteCount == rps) {
+                            int completedWaves = wavesCompleted.incrementAndGet();
+
+                            // Print progress every 30 waves (non-verbose mode)
+                            if (!verbose && completedWaves % 30 == 0) {
+                                double avgLatency = 0;
+                                if (!recentLatencies.isEmpty()) {
+                                    avgLatency = recentLatencies.stream().mapToDouble(d -> d).average().orElse(0);
+                                }
+                                System.out.printf("Completed %d/%d waves (avg latency: %.0fms)%n",
+                                        completedWaves, duration, avgLatency);
+                                recentLatencies.clear(); // Reset for next batch
+                            }
+                        }
+
+                        completedCount.incrementAndGet();
 
                         return threadResult;
                     });
