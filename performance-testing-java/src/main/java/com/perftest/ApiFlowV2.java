@@ -41,6 +41,19 @@ public class ApiFlowV2 {
     @Parameter(names = { "--html" }, description = "Generate HTML dashboard after saving CSV")
     private boolean html = false;
 
+    // Replay mode parameters
+    @Parameter(names = { "--replay" }, description = "Replay mode: path to JSONL log file")
+    private String replayLogPath = "";
+
+    @Parameter(names = { "--speed" }, description = "Speed factor for replay")
+    private double speed = 1.0;
+
+    @Parameter(names = { "--base-url" }, description = "Base URL for replay")
+    private String baseUrl = "https://cdn-test.amuselabs.com/pmm/";
+
+    @Parameter(names = { "--dry-run" }, description = "Dry run (no network calls)")
+    private boolean dryRun = false;
+
     @Parameter(names = { "--help", "-h" }, help = true, description = "Show help")
     private boolean help = false;
 
@@ -62,6 +75,11 @@ public class ApiFlowV2 {
     }
 
     public void run() {
+        if (!replayLogPath.isEmpty()) {
+            runReplayMode();
+            return;
+        }
+
         if (verbose) {
             System.out.printf("V2 Mode: puzzle_id=%s, state_len=%d%n%n",
                     ApiConfig.PUZZLE_ID, ApiConfig.STATE_LEN);
@@ -84,6 +102,19 @@ public class ApiFlowV2 {
             runParallelMode(uidPool);
         } else {
             runSingleMode(uidPool);
+        }
+    }
+
+    private void runReplayMode() {
+        StreamingReplayExecutor executor = new StreamingReplayExecutor(
+                replayLogPath, baseUrl, speed, verbose, dryRun, html);
+        try {
+            executor.execute();
+        } catch (java.io.IOException e) {
+            System.err.println("Replay error: " + e.getMessage());
+            e.printStackTrace();
+        } finally {
+            executor.shutdown();
         }
     }
 

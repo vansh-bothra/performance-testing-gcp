@@ -16,7 +16,39 @@ Load testing tool for the Amuse Labs crossword API. Simulates user flows with wa
 pip install -r requirements.txt
 ```
 
-## Usage
+## Java Version (High Performance)
+
+The Java version offers higher performance and concurrency than the Python version.
+
+### Build
+```bash
+cd performance-testing-java
+mvn clean package
+```
+
+### Usage
+Run the jar directly from the target directory:
+```bash
+# Wave/Load Test
+java -jar target/api-flow-v2.jar --rps 100 --duration 60 --random-uid --html --title "Java Load Test"
+
+# Streaming Replay (from logs)
+java -jar target/api-flow-v2.jar --replay replay_logs/traffic.jsonl --speed 2.0 --base-url https://api.yoursite.com/ --html
+```
+
+### CLI Options (Java)
+| Flag | Description |
+|------|-------------|
+| `--rps N` | Requests per second |
+| `--duration N` | Test duration in seconds |
+| `--replay <file>` | Path to JSONL traffic log for replay |
+| `--speed N` | Speed factor for replay (default 1.0) |
+| `--base-url <url>` | Target base URL for replay |
+| `--dry-run` | Simulate replay without network calls |
+| `--html` | Generate HTML dashboard |
+| `-v` | Verbose output |
+
+## Python Version Usage
 
 ### Single Run
 ```bash
@@ -35,7 +67,7 @@ Starts N threads per second for M seconds:
 python api_flow.py --rps 3 --duration 5 --title "Baseline Test" --output results/ --random-uid --html
 ```
 
-## CLI Options
+## CLI Options (Python)
 
 | Flag | Description |
 |------|-------------|

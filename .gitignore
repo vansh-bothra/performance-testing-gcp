@@ -19,3 +19,16 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# Replay Logs & Reports
+replay_logs/
+streaming_replay_*.html
+
+# Latex
+*.aux
+*.log
+*.nav
+*.out
+*.snm
+*.toc
+*.vrb
