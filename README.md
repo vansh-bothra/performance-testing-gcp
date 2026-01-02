@@ -6,7 +6,8 @@ Load testing tool for the Amuse Labs crossword API. Simulates user flows with wa
 
 | File | Description |
 |------|-------------|
-| `api_flow.py` | Main test script - runs API flow simulations |
+| `api_flow.py` | Main test script (Python) - runs API flow simulations |
+| `performance-testing-java/` | Java project for high-performance load testing and replay |
 | `view_results.py` | Generates HTML dashboard from CSV results |
 | `requirements.txt` | Python dependencies |
 
@@ -15,6 +16,22 @@ Load testing tool for the Amuse Labs crossword API. Simulates user flows with wa
 ```bash
 pip install -r requirements.txt
 ```
+
+## Preparing Replay Logs
+
+To run the replay, you first need to convert your server logs (containing `payloadJson`) into the JSONL format expected by the tool.
+
+Use the `log_distiller.py` script included in the Java project:
+
+```bash
+# Process a server log file
+python3 performance-testing-java/src/main/java/com/perftest/log_distiller.py server.log > traffic.jsonl
+
+# Process from stdin (e.g., from unzipping)
+cat server.log | python3 performance-testing-java/src/main/java/com/perftest/log_distiller.py > traffic.jsonl
+```
+
+The resulting `traffic.jsonl` file is what you pass to the `--replay` flag.
 
 ## Java Version (High Performance)
 
