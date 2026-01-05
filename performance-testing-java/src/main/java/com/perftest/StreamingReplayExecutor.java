@@ -44,8 +44,12 @@ public class StreamingReplayExecutor {
     // Scheduler for timing-based event dispatch
     private final ScheduledExecutorService scheduler;
 
-    // Worker pool for HTTP requests
-    private final ExecutorService workerPool;
+    // Worker pool for HTTP requests (initialized dynamically after pre-scan)
+    private ExecutorService workerPool;
+
+    // Session manager for dynamic token fetching
+    private SessionManager sessionManager;
+    private final Set<String> uniqueSessions = ConcurrentHashMap.newKeySet();
 
     // Stats - atomic counters for thread-safe updates
     private final AtomicInteger totalEvents = new AtomicInteger(0);
@@ -110,8 +114,8 @@ public class StreamingReplayExecutor {
         // Scheduler for timing events
         this.scheduler = Executors.newScheduledThreadPool(2);
 
-        // Worker pool for actual HTTP requests (bounded to avoid thread explosion)
-        this.workerPool = Executors.newFixedThreadPool(100);
+        // Worker pool initialized in execute() after pre-scan calculates max
+        // concurrency
     }
 
     private void log(String msg) {
@@ -136,6 +140,30 @@ public class StreamingReplayExecutor {
 
         long fileSize = Files.size(Paths.get(jsonlPath));
         progress(String.format("File size: %.2f GB", fileSize / (1024.0 * 1024 * 1024)));
+
+        // Pre-scan to calculate max concurrency
+        progress("Pre-scanning file to calculate optimal thread pool size...");
+        int maxConcurrency = preScanForConcurrency();
+        log(String.format("Calculated max concurrency: %d threads", maxConcurrency));
+        this.workerPool = Executors.newFixedThreadPool(maxConcurrency);
+
+        // Initialize session manager and pre-fetch tokens (skip for dry runs)
+        if (!dryRun && !uniqueSessions.isEmpty()) {
+            progress(String.format("Initializing %d unique sessions...", uniqueSessions.size()));
+            this.sessionManager = new SessionManager(client, baseUrl, verbose);
+            List<String[]> sessionList = new ArrayList<>();
+            for (String s : uniqueSessions) {
+                String[] parts = s.split("\\|");
+                if (parts.length == 3) {
+                    sessionList.add(parts);
+                }
+            }
+            // Use parallelism equal to 1/4 of max concurrency for session init
+            int sessionParallelism = Math.max(4, maxConcurrency / 4);
+            sessionManager.initializeSessions(sessionList, sessionParallelism);
+            progress(String.format("Session init complete: %d/%d valid",
+                    sessionManager.getValidCount(), uniqueSessions.size()));
+        }
 
         // Stream through the file
         try (BufferedReader reader = new BufferedReader(
@@ -208,6 +236,91 @@ public class StreamingReplayExecutor {
     }
 
     /**
+     * Pre-scan the file to calculate maximum concurrent requests.
+     * Quickly reads all timestamps without parsing payloads, counts events per
+     * 100ms window for concurrency and 1000ms window for RPS.
+     */
+    private int preScanForConcurrency() throws IOException {
+        Map<Long, Integer> eventsPerWindow100ms = new HashMap<>();
+        Map<Long, Integer> eventsPerWindow1000ms = new HashMap<>();
+        long scanFirstTs = -1;
+        Set<String> sessionsFound = new HashSet<>();
+
+        try (BufferedReader reader = new BufferedReader(
+                new InputStreamReader(new FileInputStream(jsonlPath), "UTF-8"),
+                4 * 1024 * 1024)) { // 4MB buffer for fast reading
+
+            String line;
+            int lineCount = 0;
+            while ((line = reader.readLine()) != null) {
+                lineCount++;
+                if (line.trim().isEmpty())
+                    continue;
+
+                try {
+                    // Quick parse - extract timestamp and session info
+                    JsonObject event = JsonParser.parseString(line).getAsJsonObject();
+                    if (event.has("ts")) {
+                        long ts = event.get("ts").getAsLong();
+
+                        if (scanFirstTs < 0) {
+                            scanFirstTs = ts;
+                        }
+
+                        long delayMs = (long) ((ts - scanFirstTs) / speedFactor);
+                        long windowKey100ms = delayMs / 100; // 100ms buckets for concurrency
+                        long windowKey1000ms = delayMs / 1000; // 1000ms buckets for RPS
+                        eventsPerWindow100ms.merge(windowKey100ms, 1, Integer::sum);
+                        eventsPerWindow1000ms.merge(windowKey1000ms, 1, Integer::sum);
+
+                        // Collect unique (userId, puzzleId, series) for session init
+                        if (event.has("payload")) {
+                            JsonObject payload = event.getAsJsonObject("payload");
+                            String userId = payload.has("userId") ? payload.get("userId").getAsString() : null;
+                            String puzzleId = payload.has("id") ? payload.get("id").getAsString() : null;
+                            String series = payload.has("series") ? payload.get("series").getAsString() : null;
+                            if (userId != null && puzzleId != null && series != null) {
+                                sessionsFound.add(userId + "|" + puzzleId + "|" + series);
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    // Skip malformed lines during pre-scan
+                }
+
+                if (lineCount % 500000 == 0) {
+                    progress(String.format("Pre-scan: %,d lines processed...", lineCount));
+                }
+            }
+
+            progress(String.format("Pre-scan complete: %,d lines, %,d seconds of traffic, %,d unique sessions",
+                    lineCount, eventsPerWindow1000ms.size(), sessionsFound.size()));
+        }
+
+        uniqueSessions.addAll(sessionsFound);
+
+        int maxInWindow100ms = eventsPerWindow100ms.values().stream()
+                .max(Integer::compareTo)
+                .orElse(10);
+
+        int maxRps = eventsPerWindow1000ms.values().stream()
+                .max(Integer::compareTo)
+                .orElse(1);
+
+        double avgRps = eventsPerWindow1000ms.isEmpty() ? 0
+                : eventsPerWindow1000ms.values().stream().mapToInt(i -> i).average().orElse(0);
+
+        progress(String.format("Max RPS: %,d | Avg RPS: %.1f | Max burst (100ms): %,d",
+                maxRps, avgRps, maxInWindow100ms));
+
+        // Add buffer for HTTP latency overlap (requests from prior windows still
+        // in-flight)
+        int calculated = Math.max(maxInWindow100ms * 2, 20);
+        // Cap at reasonable maximum
+        return Math.min(calculated, 500);
+    }
+
+    /**
      * Schedule a single event for execution at the appropriate time.
      */
     private void scheduleEvent(JsonObject event) {
@@ -260,6 +373,19 @@ public class StreamingReplayExecutor {
         }
         if (payload.has("updatedTimestamp")) {
             payload.addProperty("updatedTimestamp", now);
+        }
+
+        // Replace loadToken and playId with fresh values from SessionManager
+        if (sessionManager != null && payload.has("userId") && payload.has("id") && payload.has("series")) {
+            String userId = payload.get("userId").getAsString();
+            String puzzleId = payload.get("id").getAsString();
+            String series = payload.get("series").getAsString();
+
+            SessionManager.SessionTokens tokens = sessionManager.getOrCreateSession(userId, puzzleId, series);
+            if (tokens.isValid()) {
+                payload.addProperty("loadToken", tokens.loadToken);
+                payload.addProperty("playId", tokens.playId);
+            }
         }
 
         String url = baseUrl + endpoint.replaceFirst("^/", "");

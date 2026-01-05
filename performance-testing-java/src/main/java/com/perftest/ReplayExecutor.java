@@ -37,6 +37,8 @@ public class ReplayExecutor {
 
     private final OkHttpClient client;
     private final ScheduledExecutorService scheduler;
+    private ExecutorService workerPool; // Initialized dynamically based on max concurrency
+    private SessionManager sessionManager; // For dynamic token fetching
 
     // Stats
     private final AtomicInteger totalEvents = new AtomicInteger(0);
@@ -61,10 +63,12 @@ public class ReplayExecutor {
                 .connectTimeout(30, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .writeTimeout(30, TimeUnit.SECONDS)
-                .connectionPool(new ConnectionPool(100, 5, TimeUnit.MINUTES))
+                .connectionPool(new ConnectionPool(200, 5, TimeUnit.MINUTES))
                 .build();
 
-        this.scheduler = Executors.newScheduledThreadPool(4);
+        // Scheduler just for timing (small pool - threads don't block)
+        this.scheduler = Executors.newScheduledThreadPool(2);
+        // Worker pool initialized in execute() after calculating max concurrency
     }
 
     private void log(String msg) {
@@ -100,6 +104,43 @@ public class ReplayExecutor {
 
         replayStartTime = System.currentTimeMillis();
 
+        // Calculate max concurrency and initialize worker pool
+        int maxConcurrency = calculateMaxConcurrency(events, firstTs);
+        log(String.format("Calculated max concurrency: %d threads", maxConcurrency));
+        this.workerPool = Executors.newFixedThreadPool(maxConcurrency);
+
+        // Collect unique sessions and initialize SessionManager (skip for dry runs)
+        if (!dryRun) {
+            Set<String> uniqueSessions = new HashSet<>();
+            for (JsonObject event : events) {
+                if (event.has("payload")) {
+                    JsonObject payload = event.getAsJsonObject("payload");
+                    String userId = payload.has("userId") ? payload.get("userId").getAsString() : null;
+                    String puzzleId = payload.has("id") ? payload.get("id").getAsString() : null;
+                    String series = payload.has("series") ? payload.get("series").getAsString() : null;
+                    if (userId != null && puzzleId != null && series != null) {
+                        uniqueSessions.add(userId + "|" + puzzleId + "|" + series);
+                    }
+                }
+            }
+
+            if (!uniqueSessions.isEmpty()) {
+                log(String.format("Initializing %d unique sessions...", uniqueSessions.size()));
+                this.sessionManager = new SessionManager(client, baseUrl, verbose);
+                List<String[]> sessionList = new ArrayList<>();
+                for (String s : uniqueSessions) {
+                    String[] parts = s.split("\\|");
+                    if (parts.length == 3) {
+                        sessionList.add(parts);
+                    }
+                }
+                int sessionParallelism = Math.max(4, maxConcurrency / 4);
+                sessionManager.initializeSessions(sessionList, sessionParallelism);
+                log(String.format("Session init complete: %d/%d valid",
+                        sessionManager.getValidCount(), uniqueSessions.size()));
+            }
+        }
+
         // Schedule all events
         CountDownLatch latch = new CountDownLatch(events.size());
 
@@ -108,11 +149,14 @@ public class ReplayExecutor {
             long scheduledDelayMs = (long) ((eventTs - firstTs) / speedFactor);
 
             scheduler.schedule(() -> {
-                try {
-                    fireRequest(event, scheduledDelayMs);
-                } finally {
-                    latch.countDown();
-                }
+                // Hand off to worker pool immediately (scheduler thread doesn't block)
+                workerPool.submit(() -> {
+                    try {
+                        fireRequest(event, scheduledDelayMs);
+                    } finally {
+                        latch.countDown();
+                    }
+                });
             }, scheduledDelayMs, TimeUnit.MILLISECONDS);
         }
 
@@ -239,6 +283,19 @@ public class ReplayExecutor {
             payload.addProperty("updatedTimestamp", now);
         }
 
+        // Replace loadToken and playId with fresh values from SessionManager
+        if (sessionManager != null && payload.has("userId") && payload.has("id") && payload.has("series")) {
+            String userId = payload.get("userId").getAsString();
+            String puzzleId = payload.get("id").getAsString();
+            String series = payload.get("series").getAsString();
+
+            SessionManager.SessionTokens tokens = sessionManager.getOrCreateSession(userId, puzzleId, series);
+            if (tokens.isValid()) {
+                payload.addProperty("loadToken", tokens.loadToken);
+                payload.addProperty("playId", tokens.playId);
+            }
+        }
+
         String url = baseUrl + endpoint.replaceFirst("^/", "");
 
         Request request = new Request.Builder()
@@ -286,15 +343,47 @@ public class ReplayExecutor {
     }
 
     /**
+     * Calculate maximum concurrent requests based on event timing.
+     * Uses 100ms time windows to estimate peak concurrency.
+     */
+    private int calculateMaxConcurrency(List<JsonObject> events, long firstTs) {
+        // Count events per 100ms window
+        Map<Long, Integer> eventsPerWindow = new HashMap<>();
+
+        for (JsonObject event : events) {
+            long eventTs = event.get("ts").getAsLong();
+            long delayMs = (long) ((eventTs - firstTs) / speedFactor);
+            long windowKey = delayMs / 100; // 100ms buckets
+            eventsPerWindow.merge(windowKey, 1, Integer::sum);
+        }
+
+        int maxInWindow = eventsPerWindow.values().stream()
+                .max(Integer::compareTo)
+                .orElse(10);
+
+        // Add buffer for HTTP latency overlap (requests from prior windows still
+        // in-flight)
+        int calculated = Math.max(maxInWindow * 2, 20);
+        // Cap at reasonable maximum to avoid resource exhaustion
+        return Math.min(calculated, 500);
+    }
+
+    /**
      * Shutdown the executor and client.
      */
     public void shutdown() {
         scheduler.shutdown();
+        if (workerPool != null) {
+            workerPool.shutdown();
+        }
         client.dispatcher().executorService().shutdown();
         client.connectionPool().evictAll();
 
         try {
             scheduler.awaitTermination(10, TimeUnit.SECONDS);
+            if (workerPool != null) {
+                workerPool.awaitTermination(30, TimeUnit.SECONDS);
+            }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
