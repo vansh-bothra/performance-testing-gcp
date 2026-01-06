@@ -22,8 +22,23 @@ public class SessionManager {
 
     private static final String USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36";
 
-    // Cache: "userId|puzzleId" -> SessionTokens
-    private final ConcurrentHashMap<String, SessionTokens> tokenCache = new ConcurrentHashMap<>();
+    // Hardcode series to "gandalf" - this series is known to have rawsps configured
+    private static final String HARDCODED_SERIES = "gandalf";
+
+    // Hardcode puzzleId to a known gandalf crossword
+    private static final String HARDCODED_PUZZLE_ID = "d4725144";
+
+    // LRU Cache settings
+    private static final int MAX_CACHE_SIZE = 10000; // Max concurrent users to cache (increased for large logs)
+
+    // LRU Cache: "userId" -> SessionTokens (evicts oldest when full)
+    private final Map<String, SessionTokens> tokenCache = Collections.synchronizedMap(
+            new LinkedHashMap<String, SessionTokens>(MAX_CACHE_SIZE, 0.75f, true) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, SessionTokens> eldest) {
+                    return size() > MAX_CACHE_SIZE;
+                }
+            });
 
     // Pending initializations to avoid duplicate calls
     private final ConcurrentHashMap<String, CompletableFuture<SessionTokens>> pendingInits = new ConcurrentHashMap<>();
@@ -152,14 +167,14 @@ public class SessionManager {
     private SessionTokens initializeSession(String userId, String puzzleId, String series)
             throws IOException {
 
-        // Step 1: Get loadToken from date-picker
-        String loadToken = fetchLoadToken(userId, series);
+        // Step 1: Get loadToken from date-picker (using hardcoded series)
+        String loadToken = fetchLoadToken(userId, HARDCODED_SERIES);
         if (loadToken == null) {
             return new SessionTokens("Failed to get loadToken");
         }
 
-        // Step 2: Get playId from crossword page
-        String playId = fetchPlayId(userId, puzzleId, loadToken, series);
+        // Step 2: Get playId from crossword page (using hardcoded series and puzzleId)
+        String playId = fetchPlayId(userId, HARDCODED_PUZZLE_ID, loadToken, HARDCODED_SERIES);
         if (playId == null) {
             return new SessionTokens("Failed to get playId");
         }

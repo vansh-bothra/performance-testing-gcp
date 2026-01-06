@@ -108,7 +108,7 @@ public class StreamingReplayExecutor {
                 .connectTimeout(30, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .writeTimeout(30, TimeUnit.SECONDS)
-                .connectionPool(new ConnectionPool(200, 5, TimeUnit.MINUTES))
+                .connectionPool(new ConnectionPool(500, 5, TimeUnit.MINUTES))
                 .build();
 
         // Scheduler for timing events
@@ -147,22 +147,10 @@ public class StreamingReplayExecutor {
         log(String.format("Calculated max concurrency: %d threads", maxConcurrency));
         this.workerPool = Executors.newFixedThreadPool(maxConcurrency);
 
-        // Initialize session manager and pre-fetch tokens (skip for dry runs)
-        if (!dryRun && !uniqueSessions.isEmpty()) {
-            progress(String.format("Initializing %d unique sessions...", uniqueSessions.size()));
+        // Initialize session manager for lazy token fetching (skip for dry runs)
+        if (!dryRun) {
             this.sessionManager = new SessionManager(client, baseUrl, verbose);
-            List<String[]> sessionList = new ArrayList<>();
-            for (String s : uniqueSessions) {
-                String[] parts = s.split("\\|");
-                if (parts.length == 3) {
-                    sessionList.add(parts);
-                }
-            }
-            // Use parallelism equal to 1/4 of max concurrency for session init
-            int sessionParallelism = Math.max(4, maxConcurrency / 4);
-            sessionManager.initializeSessions(sessionList, sessionParallelism);
-            progress(String.format("Session init complete: %d/%d valid",
-                    sessionManager.getValidCount(), uniqueSessions.size()));
+            progress("SessionManager ready (lazy init mode - tokens fetched on demand)");
         }
 
         // Stream through the file
@@ -314,8 +302,8 @@ public class StreamingReplayExecutor {
                 maxRps, avgRps, maxInWindow100ms));
 
         // Add buffer for HTTP latency overlap (requests from prior windows still
-        // in-flight)
-        int calculated = Math.max(maxInWindow100ms * 2, 20);
+        // in-flight). Increased multiplier to 10x to handle high latency (300ms+).
+        int calculated = Math.max(maxInWindow100ms * 10, 20);
         // Cap at reasonable maximum
         return Math.min(calculated, 500);
     }
@@ -375,8 +363,19 @@ public class StreamingReplayExecutor {
             payload.addProperty("updatedTimestamp", now);
         }
 
+        // Ensure payload has necessary fields (re-inject if stripped from log)
+        if (!payload.has("userId")) {
+            payload.addProperty("userId", user);
+        }
+        if (!payload.has("series")) {
+            payload.addProperty("series", "gandalf"); // Hardcoded as per SessionManager
+        }
+        if (!payload.has("id")) {
+            payload.addProperty("id", "d4725144"); // Hardcoded as per SessionManager
+        }
+
         // Replace loadToken and playId with fresh values from SessionManager
-        if (sessionManager != null && payload.has("userId") && payload.has("id") && payload.has("series")) {
+        if (sessionManager != null) {
             String userId = payload.get("userId").getAsString();
             String puzzleId = payload.get("id").getAsString();
             String series = payload.get("series").getAsString();
@@ -522,6 +521,7 @@ public class StreamingReplayExecutor {
     private void waitForCompletion() {
         int lastPending = -1;
         int stuckCount = 0;
+        long lastProgressTime = 0;
 
         while (pendingRequests.get() > 0) {
             int pending = pendingRequests.get();
@@ -537,8 +537,15 @@ public class StreamingReplayExecutor {
             }
             lastPending = pending;
 
-            if (pending % 1000 == 0 || pending < 100) {
-                progress(String.format("Waiting for %d pending requests...", pending));
+            // Log every 5 seconds with full stats
+            long now = System.currentTimeMillis();
+            if (now - lastProgressTime >= 5000) {
+                int completed = successCount.get() + failCount.get();
+                double avgLatency = successCount.get() > 0 ? (double) totalLatencyMs.get() / successCount.get() : 0;
+                progress(String.format(
+                        "Pending: %,d | Completed: %,d | Success: %,d | Failed: %,d | Avg latency: %.0fms",
+                        pending, completed, successCount.get(), failCount.get(), avgLatency));
+                lastProgressTime = now;
             }
 
             try {

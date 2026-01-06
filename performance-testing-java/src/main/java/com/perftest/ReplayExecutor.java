@@ -109,36 +109,10 @@ public class ReplayExecutor {
         log(String.format("Calculated max concurrency: %d threads", maxConcurrency));
         this.workerPool = Executors.newFixedThreadPool(maxConcurrency);
 
-        // Collect unique sessions and initialize SessionManager (skip for dry runs)
+        // Initialize session manager for lazy token fetching (skip for dry runs)
         if (!dryRun) {
-            Set<String> uniqueSessions = new HashSet<>();
-            for (JsonObject event : events) {
-                if (event.has("payload")) {
-                    JsonObject payload = event.getAsJsonObject("payload");
-                    String userId = payload.has("userId") ? payload.get("userId").getAsString() : null;
-                    String puzzleId = payload.has("id") ? payload.get("id").getAsString() : null;
-                    String series = payload.has("series") ? payload.get("series").getAsString() : null;
-                    if (userId != null && puzzleId != null && series != null) {
-                        uniqueSessions.add(userId + "|" + puzzleId + "|" + series);
-                    }
-                }
-            }
-
-            if (!uniqueSessions.isEmpty()) {
-                log(String.format("Initializing %d unique sessions...", uniqueSessions.size()));
-                this.sessionManager = new SessionManager(client, baseUrl, verbose);
-                List<String[]> sessionList = new ArrayList<>();
-                for (String s : uniqueSessions) {
-                    String[] parts = s.split("\\|");
-                    if (parts.length == 3) {
-                        sessionList.add(parts);
-                    }
-                }
-                int sessionParallelism = Math.max(4, maxConcurrency / 4);
-                sessionManager.initializeSessions(sessionList, sessionParallelism);
-                log(String.format("Session init complete: %d/%d valid",
-                        sessionManager.getValidCount(), uniqueSessions.size()));
-            }
+            this.sessionManager = new SessionManager(client, baseUrl, verbose);
+            log("SessionManager ready (lazy init mode - tokens fetched on demand)");
         }
 
         // Schedule all events

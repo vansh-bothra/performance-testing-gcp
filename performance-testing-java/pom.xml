@@ -115,6 +115,23 @@
                             <finalName>api-flow-v3</finalName>
                         </configuration>
                     </execution>
+                    <!-- Streaming Replay Executor JAR -->
+                    <execution>
+                        <id>shade-replay</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.perftest.StreamingReplayExecutor</mainClass>
+                                </transformer>
+                            </transformers>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <finalName>replay-executor</finalName>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
         </plugins>
