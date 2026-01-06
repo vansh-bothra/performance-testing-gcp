@@ -23,6 +23,7 @@ Thumbs.db
 # Replay Logs & Reports
 replay_logs/
 streaming_replay_*.html
+pmm--*.log
 
 # Latex
 *.aux
