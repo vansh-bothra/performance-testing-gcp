@@ -54,8 +54,8 @@ public class ApiFlowV2 {
     @Parameter(names = { "--dry-run" }, description = "Dry run (no network calls)")
     private boolean dryRun = false;
 
-    @Parameter(names = { "--randpayl" }, description = "Generate random primaryState/secondaryState for minified logs")
-    private boolean randPayl = false;
+    @Parameter(names = { "--randpayl" }, description = "Generate random payloads for minified logs")
+    private boolean randomizePayloads = false;
 
     @Parameter(names = { "--help", "-h" }, help = true, description = "Show help")
     private boolean help = false;
@@ -110,7 +110,7 @@ public class ApiFlowV2 {
 
     private void runReplayMode() {
         StreamingReplayExecutor executor = new StreamingReplayExecutor(
-                replayLogPath, baseUrl, speed, verbose, dryRun, html, randPayl);
+                replayLogPath, baseUrl, speed, verbose, dryRun, html, randomizePayloads);
         try {
             executor.execute();
         } catch (java.io.IOException e) {

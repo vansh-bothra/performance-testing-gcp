@@ -394,6 +394,9 @@ public class TrafficReplayExecutor {
         payload.addProperty("nExceptions", 0);
         payload.addProperty("postScoreReason", "AUTOSAVE");
 
+        payload.addProperty("primaryState", randomDigitString(15));
+        payload.addProperty("secondaryState", randomDigitString(15));
+
         Request request = new Request.Builder()
                 .url(BASE_URL + "api/v1/plays")
                 .addHeader("Content-Type", "application/json")
@@ -405,6 +408,15 @@ public class TrafficReplayExecutor {
                 throw new IOException("HTTP " + response.code());
             }
         }
+    }
+
+    private String randomDigitString(int length) {
+        StringBuilder sb = new StringBuilder(length);
+        ThreadLocalRandom random = ThreadLocalRandom.current();
+        for (int i = 0; i < length; i++) {
+            sb.append(random.nextInt(10));
+        }
+        return sb.toString();
     }
 
     /**
@@ -584,7 +596,19 @@ public class TrafficReplayExecutor {
                     ));
                 }
 
-                String htmlPath = String.format("results/replay_%s_%.0fx.html", baseName, speedFactor);
+                String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
+                // If CSV was saved, try to reuse its timestamp to match
+                if (csvPath != null && csvPath.contains("_")) {
+                    // Extract timestamp from csvPath: results/replay_base_TIMESTAMP.csv
+                    // Simple regex or string manipulation
+                    int lastUnderscore = csvPath.lastIndexOf('_');
+                    int dotCsv = csvPath.lastIndexOf(".csv");
+                    if (lastUnderscore > 0 && dotCsv > lastUnderscore) {
+                        timestamp = csvPath.substring(lastUnderscore + 1, dotCsv);
+                    }
+                }
+
+                String htmlPath = String.format("results/replay_%s_%s_%.0fx.html", baseName, timestamp, speedFactor);
                 String savedPath = ReplayReportWriter.saveHtml(
                         "Traffic Replay: " + baseName,
                         replayEvents,

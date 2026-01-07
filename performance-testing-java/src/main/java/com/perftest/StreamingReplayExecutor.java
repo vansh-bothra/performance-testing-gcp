@@ -37,7 +37,7 @@ public class StreamingReplayExecutor {
     private final boolean verbose;
     private final boolean dryRun;
     private final boolean generateHtml;
-    private final boolean randomPayload;
+    private final boolean randomizePayloads;
 
     // HTTP client with connection pooling
     private final OkHttpClient client;
@@ -92,14 +92,14 @@ public class StreamingReplayExecutor {
     private final AtomicInteger pendingRequests = new AtomicInteger(0);
 
     public StreamingReplayExecutor(String jsonlPath, String baseUrl, double speedFactor,
-            boolean verbose, boolean dryRun, boolean generateHtml, boolean randomPayload) {
+            boolean verbose, boolean dryRun, boolean generateHtml, boolean randomizePayloads) {
         this.jsonlPath = jsonlPath;
         this.baseUrl = baseUrl;
         this.speedFactor = speedFactor;
         this.verbose = verbose;
         this.dryRun = dryRun;
         this.generateHtml = generateHtml;
-        this.randomPayload = randomPayload;
+        this.randomizePayloads = randomizePayloads;
 
         // Initialize latency buckets
         for (int i = 0; i < latencyBuckets.length; i++) {
@@ -128,33 +128,6 @@ public class StreamingReplayExecutor {
 
     private void progress(String msg) {
         System.out.println("[Progress] " + msg);
-    }
-
-    private static final String PRIMARY_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#";
-    private static final String SECONDARY_CHARS = "0123";
-
-    /**
-     * Generate random primaryState string (uppercase letters, digits, #).
-     */
-    private String generateRandomPrimaryState() {
-        int length = ThreadLocalRandom.current().nextInt(50, 151); // 50-150 chars
-        StringBuilder sb = new StringBuilder(length);
-        for (int i = 0; i < length; i++) {
-            sb.append(PRIMARY_CHARS.charAt(ThreadLocalRandom.current().nextInt(PRIMARY_CHARS.length())));
-        }
-        return sb.toString();
-    }
-
-    /**
-     * Generate random secondaryState string (digits 0-3).
-     */
-    private String generateRandomSecondaryState() {
-        int length = ThreadLocalRandom.current().nextInt(50, 151); // 50-150 chars
-        StringBuilder sb = new StringBuilder(length);
-        for (int i = 0; i < length; i++) {
-            sb.append(SECONDARY_CHARS.charAt(ThreadLocalRandom.current().nextInt(SECONDARY_CHARS.length())));
-        }
-        return sb.toString();
     }
 
     /**
@@ -199,7 +172,9 @@ public class StreamingReplayExecutor {
 
                 try {
                     JsonObject event = JsonParser.parseString(line).getAsJsonObject();
-                    if (event.has("payload") && event.has("ts")) {
+                    // If randomizePayloads is on, we don't strictly require 'payload' field, we can
+                    // generate it
+                    if ((event.has("payload") || randomizePayloads) && event.has("ts")) {
                         scheduleEvent(event);
                     }
                 } catch (Exception e) {
@@ -208,14 +183,11 @@ public class StreamingReplayExecutor {
                     }
                 }
 
-                // Progress every 100k lines or every 5 seconds
-                if (lineNum % 100000 == 0) {
+                // Progress every 10k lines to check for movement
+                if (lineNum % 10000 == 0) {
                     long now = System.currentTimeMillis();
-                    if (now - lastProgressTime > 5000) {
-                        progress(String.format("Read %,d lines, scheduled %,d events, completed %,d...",
-                                lineNum, scheduledEvents.get(), successCount.get() + failCount.get()));
-                        lastProgressTime = now;
-                    }
+                    progress(String.format("Read %,d lines, scheduled %,d events, completed %,d...",
+                            lineNum, scheduledEvents.get(), successCount.get() + failCount.get()));
                 }
             }
 
@@ -290,16 +262,33 @@ public class StreamingReplayExecutor {
                         eventsPerWindow100ms.merge(windowKey100ms, 1, Integer::sum);
                         eventsPerWindow1000ms.merge(windowKey1000ms, 1, Integer::sum);
 
-                        // Collect unique (userId, puzzleId, series) for session init
-                        if (event.has("payload")) {
-                            JsonObject payload = event.getAsJsonObject("payload");
-                            String userId = payload.has("userId") ? payload.get("userId").getAsString() : null;
-                            String puzzleId = payload.has("id") ? payload.get("id").getAsString() : null;
-                            String series = payload.has("series") ? payload.get("series").getAsString() : null;
-                            if (userId != null && puzzleId != null && series != null) {
-                                sessionsFound.add(userId + "|" + puzzleId + "|" + series);
-                            }
-                        }
+                        /*
+                         * Optimization: Skip session collection during pre-scan for performance.
+                         * Previous logic caused ~20x slowdown on large files due to string ops/hashing.
+                         * SessionManager handles new sessions lazily during main execution.
+                         */
+                        /*
+                         * // Collect unique (userId, puzzleId, series) for session init
+                         * String userId = null;
+                         * String puzzleId = null;
+                         * String series = null;
+                         * 
+                         * if (event.has("payload")) {
+                         * JsonObject payload = event.getAsJsonObject("payload");
+                         * userId = payload.has("userId") ? payload.get("userId").getAsString() : null;
+                         * puzzleId = payload.has("id") ? payload.get("id").getAsString() : null;
+                         * series = payload.has("series") ? payload.get("series").getAsString() : null;
+                         * } else if (event.has("userId")) {
+                         * userId = event.get("userId").getAsString();
+                         * // Defaults for minified logs
+                         * puzzleId = "d4725144";
+                         * series = "gandalf";
+                         * }
+                         * 
+                         * if (userId != null && puzzleId != null && series != null) {
+                         * sessionsFound.add(userId + "|" + puzzleId + "|" + series);
+                         * }
+                         */
                     }
                 } catch (Exception e) {
                     // Skip malformed lines during pre-scan
@@ -372,8 +361,24 @@ public class StreamingReplayExecutor {
     private void fireRequest(JsonObject event, long scheduledDelayMs) {
         long actualTime = System.currentTimeMillis() - replayStartTime;
         String endpoint = event.has("endpoint") ? event.get("endpoint").getAsString() : "/api/v1/plays";
-        String user = event.has("user") ? event.get("user").getAsString() : "unknown";
-        JsonObject payload = event.getAsJsonObject("payload");
+
+        // Handle "user" (old format) or "userId" (new format)
+        String user = "unknown";
+        if (event.has("user")) {
+            user = event.get("user").getAsString();
+        } else if (event.has("userId")) {
+            user = event.get("userId").getAsString();
+        }
+
+        JsonObject payload;
+        if (event.has("payload")) {
+            payload = event.getAsJsonObject("payload");
+        } else if (randomizePayloads) {
+            payload = generateRandomPayload(endpoint, user);
+        } else {
+            // Should not happen given scheduleEvent check, but safe fallback
+            payload = new JsonObject();
+        }
 
         if (dryRun) {
             successCount.incrementAndGet();
@@ -401,17 +406,6 @@ public class StreamingReplayExecutor {
         }
         if (!payload.has("id")) {
             payload.addProperty("id", "d4725144"); // Hardcoded as per SessionManager
-        }
-
-        // Generate random primaryState/secondaryState if --randpayl flag is set and
-        // they're missing
-        if (randomPayload) {
-            if (!payload.has("primaryState") || payload.get("primaryState").isJsonNull()) {
-                payload.addProperty("primaryState", generateRandomPrimaryState());
-            }
-            if (!payload.has("secondaryState") || payload.get("secondaryState").isJsonNull()) {
-                payload.addProperty("secondaryState", generateRandomSecondaryState());
-            }
         }
 
         // Replace loadToken and playId with fresh values from SessionManager
@@ -529,6 +523,52 @@ public class StreamingReplayExecutor {
             bucket = 5;
 
         latencyBuckets[bucket].incrementAndGet();
+    }
+
+    /**
+     * Generate a synthetic random payload for an endpoint.
+     */
+    private JsonObject generateRandomPayload(String endpoint, String userId) {
+        // Only generate payloads for known POST endpoints
+        if (endpoint.contains("/api/v1/plays") || endpoint.contains("/postPickerStatus")) {
+            JsonObject payload = new JsonObject();
+            payload.addProperty("userId", userId);
+            payload.addProperty("timestamp", System.currentTimeMillis());
+            payload.addProperty("updatedTimestamp", System.currentTimeMillis());
+            payload.addProperty("browser", "PerformanceTest/1.0 (RandomPayload)");
+
+            if (endpoint.contains("/api/v1/plays")) {
+                // Random 15-digit strings for state
+                payload.addProperty("primaryState", randomDigitString(15));
+                payload.addProperty("secondaryState", randomDigitString(15));
+
+                // Random connection details
+                payload.addProperty("playState", 2); // COMPLETED
+                payload.addProperty("postScoreReason", "AUTOSAVE");
+                payload.addProperty("timeTaken", ThreadLocalRandom.current().nextInt(10, 600));
+                payload.addProperty("score", ThreadLocalRandom.current().nextInt(0, 100));
+
+                // Set defaults for id/series if they can't be fetched
+                payload.addProperty("series", "gandalf");
+                payload.addProperty("id", "d4725144");
+
+            } else if (endpoint.contains("/postPickerStatus")) {
+                // Minimal picker status
+                payload.addProperty("pickerStatus", "open");
+            }
+            return payload;
+        }
+
+        return null;
+    }
+
+    private String randomDigitString(int length) {
+        StringBuilder sb = new StringBuilder(length);
+        ThreadLocalRandom random = ThreadLocalRandom.current();
+        for (int i = 0; i < length; i++) {
+            sb.append(random.nextInt(10));
+        }
+        return sb.toString();
     }
 
     /**
@@ -742,7 +782,7 @@ public class StreamingReplayExecutor {
             System.out.println("  --speed <factor>   Speed factor (default: 1.0)");
             System.out.println("  --dry-run          Don't actually send requests");
             System.out.println("  --html             Generate HTML report (uses sampled events)");
-            System.out.println("  --randpayl         Generate random primaryState/secondaryState for minified logs");
+            System.out.println("  --randpayl         Generate random payloads for minified logs");
             System.out.println("  -v, --verbose      Verbose output");
             System.out.println();
             System.out.println("Memory-efficient streaming replay for large files (>RAM).");
@@ -755,7 +795,7 @@ public class StreamingReplayExecutor {
         boolean verbose = false;
         boolean dryRun = false;
         boolean html = false;
-        boolean randPayl = false;
+        boolean randomizePayloads = false;
 
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
@@ -772,7 +812,7 @@ public class StreamingReplayExecutor {
                     html = true;
                     break;
                 case "--randpayl":
-                    randPayl = true;
+                    randomizePayloads = true;
                     break;
                 case "-v":
                 case "--verbose":
@@ -782,7 +822,7 @@ public class StreamingReplayExecutor {
         }
 
         StreamingReplayExecutor executor = new StreamingReplayExecutor(
-                jsonlPath, baseUrl, speedFactor, verbose, dryRun, html, randPayl);
+                jsonlPath, baseUrl, speedFactor, verbose, dryRun, html, randomizePayloads);
         try {
             executor.execute();
         } catch (IOException e) {

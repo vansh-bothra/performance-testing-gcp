@@ -60,10 +60,25 @@ java -jar target/api-flow-v3.jar --uid vansh -v
 java -jar target/api-flow-v3.jar --rps 5 --duration 10 --random-uid --output results/ --html -v
 ```
 
+### Replay Mode (Streaming)
+
+Replay traffic from JSONL logs at varying speeds.
+
+```bash
+# Basic replay
+java -jar target/api-flow-v2.jar --replay traffic.jsonl --speed 2.0 --html -v
+
+# Replay minified logs (auto-generate random payloads)
+java -jar target/api-flow-v2.jar --replay traffic_minified.jsonl --randpayl --dry-run
+```
+
 ## CLI Options
 
 | Flag                | Description                       |
 | ------------------- | --------------------------------- |
+| `--replay <file>`   | Replay traffic from JSONL log     |
+| `--speed <factor>`  | Replay speed (e.g. 2.0 = 2x)      |
+| `--randpayl`        | Random payloads (for minified logs)|
 | `--uid <name>`      | User ID for the test              |
 | `--random-uid`      | Generate random UID per run       |
 | `--uid-pool-size N` | Pick from pool of N random UIDs   |
