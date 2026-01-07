@@ -132,6 +132,23 @@
                             <finalName>replay-executor</finalName>
                         </configuration>
                     </execution>
+                    <!-- Traffic Replay Executor JAR -->
+                    <execution>
+                        <id>shade-traffic-replay</id>
+                        <phase>package</phase>
+                        <goals>
+                            <goal>shade</goal>
+                        </goals>
+                        <configuration>
+                            <transformers>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                    <mainClass>com.perftest.TrafficReplayExecutor</mainClass>
+                                </transformer>
+                            </transformers>
+                            <createDependencyReducedPom>false</createDependencyReducedPom>
+                            <finalName>traffic-replay</finalName>
+                        </configuration>
+                    </execution>
                 </executions>
             </plugin>
         </plugins>

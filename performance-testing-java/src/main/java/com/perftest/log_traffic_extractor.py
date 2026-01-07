@@ -18,6 +18,7 @@ Usage:
 import sys
 import re
 import json
+import base64
 from datetime import datetime
 from typing import Optional
 import argparse
@@ -38,6 +39,7 @@ POST_SCORE_JSON_PATTERN = re.compile(r'postScoreJson:\s*(\{[^}]+(?:\{[^}]*\}[^}]
 PICKER_STATUS_JSON_PATTERN = re.compile(r'pickerStatusJson:\s*(\{[^}]+(?:\{[^}]*\}[^}]*)*\})')
 USER_ID_PATTERN = re.compile(r'"userId":\s*"([^"]+)"')  # userId in JSON
 UID_PATTERN = re.compile(r'\buid:\s*(\S+)')  # uid in query params (for GET requests)
+LOAD_TOKEN_PATTERN = re.compile(r'"loadToken":\s*"([^"]+)"')  # loadToken in JSON
 
 # Endpoints we care about (from ApiFlow.java)
 ALLOWED_ENDPOINTS = {
@@ -83,6 +85,38 @@ def safe_json_extract(json_str: str) -> Optional[dict]:
             return json.loads(fixed)
         except json.JSONDecodeError:
             return None
+
+
+def decode_load_token_uid(load_token: str) -> Optional[str]:
+    """Decode loadToken (JWT-like) to extract uid.
+    
+    loadToken is base64 encoded with structure:
+    {header}{payload}{signature}
+    
+    The payload contains 'uid' field.
+    """
+    try:
+        # Add padding if needed
+        padded = load_token + '=' * (4 - len(load_token) % 4)
+        decoded = base64.b64decode(padded).decode('utf-8', errors='ignore')
+        
+        # The decoded string has format: {header}{payload}+signature
+        # Find the second JSON object (payload) which contains uid
+        # Look for "uid":"value"
+        uid_match = re.search(r'"uid":\s*"([^"]+)"', decoded)
+        if uid_match:
+            return uid_match.group(1)
+    except Exception:
+        pass
+    return None
+
+
+def extract_load_token(line: str) -> Optional[str]:
+    """Extract loadToken from log message."""
+    match = LOAD_TOKEN_PATTERN.search(line)
+    if match:
+        return match.group(1)
+    return None
 
 
 def extract_user_id(line: str) -> Optional[str]:
@@ -133,10 +167,17 @@ def process_line(line: str) -> Optional[dict]:
     if endpoint in GAME_ENDPOINTS:
         endpoint = '/crossword'
     
-    # postPickerStatus doesn't need userId (it only uses loadToken)
-    # For other endpoints, userId is required - skip if not found
+    # For postPickerStatus, extract userId from loadToken
+    # For other endpoints, extract userId directly
     if endpoint == '/postPickerStatus':
-        userId = None
+        load_token = extract_load_token(line)
+        if load_token:
+            userId = decode_load_token_uid(load_token)
+        else:
+            userId = None
+        # Skip postPickerStatus without userId
+        if userId is None:
+            return None
     else:
         userId = extract_user_id(line)
         if userId is None:
