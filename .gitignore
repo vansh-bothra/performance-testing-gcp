@@ -33,3 +33,4 @@ pmm--*.log
 *.snm
 *.toc
 *.vrb
+traffic_final.jsonl

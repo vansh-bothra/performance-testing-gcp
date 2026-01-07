@@ -37,6 +37,7 @@ public class StreamingReplayExecutor {
     private final boolean verbose;
     private final boolean dryRun;
     private final boolean generateHtml;
+    private final boolean randomPayload;
 
     // HTTP client with connection pooling
     private final OkHttpClient client;
@@ -91,13 +92,14 @@ public class StreamingReplayExecutor {
     private final AtomicInteger pendingRequests = new AtomicInteger(0);
 
     public StreamingReplayExecutor(String jsonlPath, String baseUrl, double speedFactor,
-            boolean verbose, boolean dryRun, boolean generateHtml) {
+            boolean verbose, boolean dryRun, boolean generateHtml, boolean randomPayload) {
         this.jsonlPath = jsonlPath;
         this.baseUrl = baseUrl;
         this.speedFactor = speedFactor;
         this.verbose = verbose;
         this.dryRun = dryRun;
         this.generateHtml = generateHtml;
+        this.randomPayload = randomPayload;
 
         // Initialize latency buckets
         for (int i = 0; i < latencyBuckets.length; i++) {
@@ -126,6 +128,33 @@ public class StreamingReplayExecutor {
 
     private void progress(String msg) {
         System.out.println("[Progress] " + msg);
+    }
+
+    private static final String PRIMARY_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789#";
+    private static final String SECONDARY_CHARS = "0123";
+
+    /**
+     * Generate random primaryState string (uppercase letters, digits, #).
+     */
+    private String generateRandomPrimaryState() {
+        int length = ThreadLocalRandom.current().nextInt(50, 151); // 50-150 chars
+        StringBuilder sb = new StringBuilder(length);
+        for (int i = 0; i < length; i++) {
+            sb.append(PRIMARY_CHARS.charAt(ThreadLocalRandom.current().nextInt(PRIMARY_CHARS.length())));
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Generate random secondaryState string (digits 0-3).
+     */
+    private String generateRandomSecondaryState() {
+        int length = ThreadLocalRandom.current().nextInt(50, 151); // 50-150 chars
+        StringBuilder sb = new StringBuilder(length);
+        for (int i = 0; i < length; i++) {
+            sb.append(SECONDARY_CHARS.charAt(ThreadLocalRandom.current().nextInt(SECONDARY_CHARS.length())));
+        }
+        return sb.toString();
     }
 
     /**
@@ -372,6 +401,17 @@ public class StreamingReplayExecutor {
         }
         if (!payload.has("id")) {
             payload.addProperty("id", "d4725144"); // Hardcoded as per SessionManager
+        }
+
+        // Generate random primaryState/secondaryState if --randpayl flag is set and
+        // they're missing
+        if (randomPayload) {
+            if (!payload.has("primaryState") || payload.get("primaryState").isJsonNull()) {
+                payload.addProperty("primaryState", generateRandomPrimaryState());
+            }
+            if (!payload.has("secondaryState") || payload.get("secondaryState").isJsonNull()) {
+                payload.addProperty("secondaryState", generateRandomSecondaryState());
+            }
         }
 
         // Replace loadToken and playId with fresh values from SessionManager
@@ -702,6 +742,7 @@ public class StreamingReplayExecutor {
             System.out.println("  --speed <factor>   Speed factor (default: 1.0)");
             System.out.println("  --dry-run          Don't actually send requests");
             System.out.println("  --html             Generate HTML report (uses sampled events)");
+            System.out.println("  --randpayl         Generate random primaryState/secondaryState for minified logs");
             System.out.println("  -v, --verbose      Verbose output");
             System.out.println();
             System.out.println("Memory-efficient streaming replay for large files (>RAM).");
@@ -714,6 +755,7 @@ public class StreamingReplayExecutor {
         boolean verbose = false;
         boolean dryRun = false;
         boolean html = false;
+        boolean randPayl = false;
 
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
@@ -729,6 +771,9 @@ public class StreamingReplayExecutor {
                 case "--html":
                     html = true;
                     break;
+                case "--randpayl":
+                    randPayl = true;
+                    break;
                 case "-v":
                 case "--verbose":
                     verbose = true;
@@ -737,7 +782,7 @@ public class StreamingReplayExecutor {
         }
 
         StreamingReplayExecutor executor = new StreamingReplayExecutor(
-                jsonlPath, baseUrl, speedFactor, verbose, dryRun, html);
+                jsonlPath, baseUrl, speedFactor, verbose, dryRun, html, randPayl);
         try {
             executor.execute();
         } catch (IOException e) {
