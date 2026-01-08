@@ -43,8 +43,6 @@ public class TrafficReplayExecutor {
 
     private static final int PREWARM_THREADS = 50;
 
-    private static final String SESSIONS_FILE = "sessions.json";
-
     private final String jsonlPath;
     private final double speedFactor;
     private final boolean verbose;
@@ -52,6 +50,7 @@ public class TrafficReplayExecutor {
     private final boolean generateHtml;
     private final boolean saveSessions;
     private final boolean loadSessions;
+    private final String sessionsFile; // Computed from input filename
 
     private final OkHttpClient client;
     private final ScheduledExecutorService scheduler;
@@ -105,6 +104,11 @@ public class TrafficReplayExecutor {
         this.generateHtml = generateHtml;
         this.saveSessions = saveSessions;
         this.loadSessions = loadSessions;
+
+        // Compute sessions filename from input file: traffic_final_10min.jsonl ->
+        // sessions_traffic_final_10min.json
+        String baseName = Paths.get(jsonlPath).getFileName().toString().replaceFirst("\\.jsonl?$", "");
+        this.sessionsFile = "sessions_" + baseName + ".json";
 
         // Configure dispatcher to allow more concurrent requests per host
         Dispatcher dispatcher = new Dispatcher();
@@ -443,7 +447,7 @@ public class TrafficReplayExecutor {
      * Save user sessions to JSON file for later reuse.
      */
     private void saveSessionsToFile() {
-        try (PrintWriter writer = new PrintWriter(new FileWriter(SESSIONS_FILE))) {
+        try (PrintWriter writer = new PrintWriter(new FileWriter(sessionsFile))) {
             Map<String, Map<String, String>> sessionsMap = new HashMap<>();
             for (Map.Entry<String, UserSession> entry : userSessions.entrySet()) {
                 Map<String, String> sessionData = new HashMap<>();
@@ -463,11 +467,11 @@ public class TrafficReplayExecutor {
      * @return true if sessions were loaded successfully
      */
     private boolean loadSessionsFromFile() {
-        File sessionsFile = new File(SESSIONS_FILE);
-        if (!sessionsFile.exists()) {
+        File sessionFile = new File(sessionsFile);
+        if (!sessionFile.exists()) {
             return false;
         }
-        try (BufferedReader reader = new BufferedReader(new FileReader(sessionsFile))) {
+        try (BufferedReader reader = new BufferedReader(new FileReader(sessionFile))) {
             Type type = new TypeToken<Map<String, Map<String, String>>>() {
             }.getType();
             Map<String, Map<String, String>> sessionsMap = GSON.fromJson(reader, type);
@@ -550,7 +554,7 @@ public class TrafficReplayExecutor {
         // Phase 2: Load cached sessions or pre-warm users
         if (!dryRun && !uniqueUsers.isEmpty()) {
             if (loadSessions && loadSessionsFromFile()) {
-                log(String.format("Loaded %d cached sessions from %s", userSessions.size(), SESSIONS_FILE));
+                log(String.format("Loaded %d cached sessions from %s", userSessions.size(), sessionsFile));
             } else {
                 // Pre-warm users in parallel
                 log(String.format("Phase 2: Pre-warming %d users with %d threads...", uniqueUsers.size(),
@@ -596,7 +600,7 @@ public class TrafficReplayExecutor {
                 // Save sessions if requested
                 if (saveSessions) {
                     saveSessionsToFile();
-                    log(String.format("Saved %d sessions to %s", userSessions.size(), SESSIONS_FILE));
+                    log(String.format("Saved %d sessions to %s", userSessions.size(), sessionsFile));
                 }
             }
         }
