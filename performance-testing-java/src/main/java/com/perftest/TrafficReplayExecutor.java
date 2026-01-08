@@ -41,7 +41,7 @@ public class TrafficReplayExecutor {
     private static final String SET_PARAM = "gandalf";
     private static final String PUZZLE_ID = "d4725144";
 
-    private static final int PREWARM_THREADS = 50;
+    private static final int PREWARM_THREADS = 100;
 
     private final String jsonlPath;
     private final double speedFactor;
@@ -112,8 +112,8 @@ public class TrafficReplayExecutor {
 
         // Configure dispatcher to allow more concurrent requests per host
         Dispatcher dispatcher = new Dispatcher();
-        dispatcher.setMaxRequests(100);
-        dispatcher.setMaxRequestsPerHost(50);
+        dispatcher.setMaxRequests(200);
+        dispatcher.setMaxRequestsPerHost(100);
 
         this.client = new OkHttpClient.Builder()
                 .connectTimeout(30, TimeUnit.SECONDS)
@@ -123,7 +123,7 @@ public class TrafficReplayExecutor {
                 .dispatcher(dispatcher)
                 .build();
 
-        this.scheduler = Executors.newScheduledThreadPool(200);
+        this.scheduler = Executors.newScheduledThreadPool(20);
         this.prewarmExecutor = Executors.newFixedThreadPool(PREWARM_THREADS);
     }
 
@@ -638,16 +638,26 @@ public class TrafficReplayExecutor {
 
                 AtomicInteger warmed = new AtomicInteger(0);
                 AtomicInteger failed = new AtomicInteger(0);
+                AtomicLong totalPrewarmTimeMs = new AtomicLong(0);
 
                 List<Future<?>> futures = new ArrayList<>();
                 for (String userId : uniqueUsers) {
                     futures.add(prewarmExecutor.submit(() -> {
+                        long userStart = System.currentTimeMillis();
                         try {
                             UserSession session = prewarmUser(userId);
                             userSessions.put(userId, session);
+                            long userDuration = System.currentTimeMillis() - userStart;
+                            totalPrewarmTimeMs.addAndGet(userDuration);
                             int count = warmed.incrementAndGet();
+
+                            // Progress with analytics every 50 users
                             if (count % 50 == 0) {
-                                System.out.printf("\r[Prewarm] %d/%d users...", count, uniqueUsers.size());
+                                double avgMs = (double) totalPrewarmTimeMs.get() / count;
+                                int remaining = uniqueUsers.size() - count - failed.get();
+                                double etaSeconds = (remaining * avgMs / 1000.0) / PREWARM_THREADS;
+                                System.out.printf("\r[Prewarm] %d/%d users | avg: %.0fms/user | ETA: %.0fs   ",
+                                        count, uniqueUsers.size(), avgMs, etaSeconds);
                             }
                         } catch (Exception e) {
                             failed.incrementAndGet();
@@ -668,9 +678,10 @@ public class TrafficReplayExecutor {
                 }
 
                 long prewarmDuration = System.currentTimeMillis() - prewarmStart;
+                double avgPrewarmMs = warmed.get() > 0 ? (double) totalPrewarmTimeMs.get() / warmed.get() : 0;
                 System.out.println();
-                log(String.format("Pre-warmed %d users (%d failed) in %.1f seconds",
-                        warmed.get(), failed.get(), prewarmDuration / 1000.0));
+                log(String.format("Pre-warmed %d users (%d failed) in %.1f seconds (avg %.0fms/user)",
+                        warmed.get(), failed.get(), prewarmDuration / 1000.0, avgPrewarmMs));
 
                 // Save sessions if requested
                 if (saveSessions) {
