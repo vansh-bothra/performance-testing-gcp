@@ -3,9 +3,11 @@ package com.perftest;
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.reflect.TypeToken;
 import okhttp3.*;
 
 import java.io.*;
+import java.lang.reflect.Type;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.LocalDateTime;
@@ -39,13 +41,17 @@ public class TrafficReplayExecutor {
     private static final String SET_PARAM = "gandalf";
     private static final String PUZZLE_ID = "d4725144";
 
-    private static final int PREWARM_THREADS = 10;
+    private static final int PREWARM_THREADS = 50;
+
+    private static final String SESSIONS_FILE = "sessions.json";
 
     private final String jsonlPath;
     private final double speedFactor;
     private final boolean verbose;
     private final boolean dryRun;
     private final boolean generateHtml;
+    private final boolean saveSessions;
+    private final boolean loadSessions;
 
     private final OkHttpClient client;
     private final ScheduledExecutorService scheduler;
@@ -90,18 +96,26 @@ public class TrafficReplayExecutor {
     }
 
     public TrafficReplayExecutor(String jsonlPath, double speedFactor, boolean verbose, boolean dryRun,
-            boolean generateHtml) {
+            boolean generateHtml, boolean saveSessions, boolean loadSessions) {
         this.jsonlPath = jsonlPath;
         this.speedFactor = speedFactor;
         this.verbose = verbose;
         this.dryRun = dryRun;
         this.generateHtml = generateHtml;
+        this.saveSessions = saveSessions;
+        this.loadSessions = loadSessions;
+
+        // Configure dispatcher to allow more concurrent requests per host
+        Dispatcher dispatcher = new Dispatcher();
+        dispatcher.setMaxRequests(100);
+        dispatcher.setMaxRequestsPerHost(50);
 
         this.client = new OkHttpClient.Builder()
                 .connectTimeout(30, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .writeTimeout(30, TimeUnit.SECONDS)
                 .connectionPool(new ConnectionPool(100, 5, TimeUnit.MINUTES))
+                .dispatcher(dispatcher)
                 .build();
 
         this.scheduler = Executors.newScheduledThreadPool(16);
@@ -420,6 +434,55 @@ public class TrafficReplayExecutor {
     }
 
     /**
+     * Save user sessions to JSON file for later reuse.
+     */
+    private void saveSessionsToFile() {
+        try (PrintWriter writer = new PrintWriter(new FileWriter(SESSIONS_FILE))) {
+            Map<String, Map<String, String>> sessionsMap = new HashMap<>();
+            for (Map.Entry<String, UserSession> entry : userSessions.entrySet()) {
+                Map<String, String> sessionData = new HashMap<>();
+                sessionData.put("loadToken", entry.getValue().loadToken);
+                sessionData.put("playId", entry.getValue().playId);
+                sessionsMap.put(entry.getKey(), sessionData);
+            }
+            writer.write(GSON.toJson(sessionsMap));
+        } catch (IOException e) {
+            System.err.println("Failed to save sessions: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Load user sessions from JSON file.
+     * 
+     * @return true if sessions were loaded successfully
+     */
+    private boolean loadSessionsFromFile() {
+        File sessionsFile = new File(SESSIONS_FILE);
+        if (!sessionsFile.exists()) {
+            return false;
+        }
+        try (BufferedReader reader = new BufferedReader(new FileReader(sessionsFile))) {
+            Type type = new TypeToken<Map<String, Map<String, String>>>() {
+            }.getType();
+            Map<String, Map<String, String>> sessionsMap = GSON.fromJson(reader, type);
+            if (sessionsMap == null || sessionsMap.isEmpty()) {
+                return false;
+            }
+            for (Map.Entry<String, Map<String, String>> entry : sessionsMap.entrySet()) {
+                String userId = entry.getKey();
+                Map<String, String> sessionData = entry.getValue();
+                userSessions.put(userId, new UserSession(
+                        sessionData.get("loadToken"),
+                        sessionData.get("playId")));
+            }
+            return true;
+        } catch (Exception e) {
+            System.err.println("Failed to load sessions: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
      * Save results to CSV file.
      */
     private String saveCsv(String baseName) throws IOException {
@@ -478,46 +541,58 @@ public class TrafficReplayExecutor {
 
         log(String.format("Found %d events and %d unique users", events.size(), uniqueUsers.size()));
 
-        // Phase 2: Pre-warm users in parallel (10 threads)
+        // Phase 2: Load cached sessions or pre-warm users
         if (!dryRun && !uniqueUsers.isEmpty()) {
-            log(String.format("Phase 2: Pre-warming %d users with %d threads...", uniqueUsers.size(), PREWARM_THREADS));
-            long prewarmStart = System.currentTimeMillis();
+            if (loadSessions && loadSessionsFromFile()) {
+                log(String.format("Loaded %d cached sessions from %s", userSessions.size(), SESSIONS_FILE));
+            } else {
+                // Pre-warm users in parallel
+                log(String.format("Phase 2: Pre-warming %d users with %d threads...", uniqueUsers.size(),
+                        PREWARM_THREADS));
+                long prewarmStart = System.currentTimeMillis();
 
-            AtomicInteger warmed = new AtomicInteger(0);
-            AtomicInteger failed = new AtomicInteger(0);
+                AtomicInteger warmed = new AtomicInteger(0);
+                AtomicInteger failed = new AtomicInteger(0);
 
-            List<Future<?>> futures = new ArrayList<>();
-            for (String userId : uniqueUsers) {
-                futures.add(prewarmExecutor.submit(() -> {
+                List<Future<?>> futures = new ArrayList<>();
+                for (String userId : uniqueUsers) {
+                    futures.add(prewarmExecutor.submit(() -> {
+                        try {
+                            UserSession session = prewarmUser(userId);
+                            userSessions.put(userId, session);
+                            int count = warmed.incrementAndGet();
+                            if (count % 50 == 0) {
+                                System.out.printf("\r[Prewarm] %d/%d users...", count, uniqueUsers.size());
+                            }
+                        } catch (Exception e) {
+                            failed.incrementAndGet();
+                            if (verbose) {
+                                log(String.format("Failed to pre-warm user %s: %s", userId, e.getMessage()));
+                            }
+                        }
+                    }));
+                }
+
+                // Wait for all pre-warm tasks
+                for (Future<?> f : futures) {
                     try {
-                        UserSession session = prewarmUser(userId);
-                        userSessions.put(userId, session);
-                        int count = warmed.incrementAndGet();
-                        if (count % 50 == 0) {
-                            System.out.printf("\r[Prewarm] %d/%d users...", count, uniqueUsers.size());
-                        }
+                        f.get(60, TimeUnit.SECONDS);
                     } catch (Exception e) {
-                        failed.incrementAndGet();
-                        if (verbose) {
-                            log(String.format("Failed to pre-warm user %s: %s", userId, e.getMessage()));
-                        }
+                        // Ignore
                     }
-                }));
-            }
+                }
 
-            // Wait for all pre-warm tasks
-            for (Future<?> f : futures) {
-                try {
-                    f.get(60, TimeUnit.SECONDS);
-                } catch (Exception e) {
-                    // Ignore
+                long prewarmDuration = System.currentTimeMillis() - prewarmStart;
+                System.out.println();
+                log(String.format("Pre-warmed %d users (%d failed) in %.1f seconds",
+                        warmed.get(), failed.get(), prewarmDuration / 1000.0));
+
+                // Save sessions if requested
+                if (saveSessions) {
+                    saveSessionsToFile();
+                    log(String.format("Saved %d sessions to %s", userSessions.size(), SESSIONS_FILE));
                 }
             }
-
-            long prewarmDuration = System.currentTimeMillis() - prewarmStart;
-            System.out.println();
-            log(String.format("Pre-warmed %d users (%d failed) in %.1f seconds",
-                    warmed.get(), failed.get(), prewarmDuration / 1000.0));
         }
 
         // Phase 3: Schedule and fire requests
@@ -651,6 +726,8 @@ public class TrafficReplayExecutor {
             System.out.println("  --speed <factor>   Speed factor (default: 1.0, e.g., 5.0 = 5x faster)");
             System.out.println("  --dry-run          Don't actually send requests");
             System.out.println("  --html             Generate HTML report");
+            System.out.println("  --save-sessions    Pre-warm users and save sessions to sessions.json");
+            System.out.println("  --load-sessions    Load sessions from sessions.json (skip pre-warming)");
             System.out.println("  -v, --verbose      Verbose output");
             return;
         }
@@ -660,6 +737,8 @@ public class TrafficReplayExecutor {
         boolean verbose = false;
         boolean dryRun = false;
         boolean html = false;
+        boolean saveSessions = false;
+        boolean loadSessions = false;
 
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
@@ -672,6 +751,12 @@ public class TrafficReplayExecutor {
                 case "--html":
                     html = true;
                     break;
+                case "--save-sessions":
+                    saveSessions = true;
+                    break;
+                case "--load-sessions":
+                    loadSessions = true;
+                    break;
                 case "-v":
                 case "--verbose":
                     verbose = true;
@@ -679,7 +764,8 @@ public class TrafficReplayExecutor {
             }
         }
 
-        TrafficReplayExecutor executor = new TrafficReplayExecutor(jsonlPath, speedFactor, verbose, dryRun, html);
+        TrafficReplayExecutor executor = new TrafficReplayExecutor(jsonlPath, speedFactor, verbose, dryRun, html,
+                saveSessions, loadSessions);
         try {
             executor.execute();
         } catch (IOException e) {
