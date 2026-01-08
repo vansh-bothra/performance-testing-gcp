@@ -69,6 +69,7 @@ public class TrafficReplayExecutor {
     // CSV output
     private final List<String[]> csvRows = Collections.synchronizedList(new ArrayList<>());
     private volatile long replayStartTime;
+    private final AtomicLong lastResponseTimeMs = new AtomicLong(0);
 
     /**
      * Per-user session state.
@@ -118,7 +119,7 @@ public class TrafficReplayExecutor {
                 .dispatcher(dispatcher)
                 .build();
 
-        this.scheduler = Executors.newScheduledThreadPool(16);
+        this.scheduler = Executors.newScheduledThreadPool(200);
         this.prewarmExecutor = Executors.newFixedThreadPool(PREWARM_THREADS);
     }
 
@@ -289,16 +290,21 @@ public class TrafficReplayExecutor {
 
     private void addCsvRow(int index, long scheduledMs, long actualMs, long latencyMs, boolean success,
             String endpoint, String userId, String error) {
+        long responseMs = actualMs + latencyMs;
         csvRows.add(new String[] {
                 String.valueOf(index),
                 String.valueOf(scheduledMs),
                 String.valueOf(actualMs),
                 String.valueOf(latencyMs),
+                String.valueOf(responseMs),
                 success ? "true" : "false",
                 endpoint,
                 userId != null ? userId : "",
                 error
         });
+
+        // Track the latest response completion time
+        lastResponseTimeMs.updateAndGet(current -> Math.max(current, responseMs));
     }
 
     private void fireGetDatePicker(String userId) throws IOException {
@@ -490,7 +496,7 @@ public class TrafficReplayExecutor {
         String csvPath = String.format("results/replay_%s_%s.csv", baseName, timestamp);
 
         try (PrintWriter writer = new PrintWriter(new FileWriter(csvPath))) {
-            writer.println("index,scheduledMs,actualMs,latencyMs,success,endpoint,userId,error");
+            writer.println("index,scheduledMs,actualMs,latencyMs,responseMs,success,endpoint,userId,error");
             for (String[] row : csvRows) {
                 writer.println(String.join(",", row));
             }
@@ -616,12 +622,27 @@ public class TrafficReplayExecutor {
             cumulativeDelayMs += event.delayMs;
         }
 
+        // Store original traffic duration (before speed adjustment)
+        final long originalDurationMs = cumulativeDelayMs;
+
         // Wait for completion
-        long expectedDurationMs = (long) (cumulativeDelayMs / speedFactor) + 60000;
+        // Add extra time: scheduled duration + buffer for in-flight requests (avg
+        // latency * concurrent requests factor)
+        long scheduledDurationMs = (long) (cumulativeDelayMs / speedFactor);
+        // At high speeds, requests may take longer than the schedule gap, so add
+        // substantial buffer
+        long maxLatencyBuffer = 120_000; // 2 min buffer for in-flight requests to complete
+        long expectedDurationMs = scheduledDurationMs + maxLatencyBuffer;
+
+        log(String.format("Waiting up to %.1f seconds for completion (scheduled: %.1fs + buffer: %.1fs)...",
+                expectedDurationMs / 1000.0, scheduledDurationMs / 1000.0, maxLatencyBuffer / 1000.0));
+
         try {
             boolean completed = latch.await(expectedDurationMs, TimeUnit.MILLISECONDS);
             if (!completed) {
-                log("Warning: Timeout waiting for all requests");
+                int remaining = (int) latch.getCount();
+                System.err.println(
+                        String.format("Warning: Timeout! %d/%d requests did not complete.", remaining, events.size()));
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -636,12 +657,16 @@ public class TrafficReplayExecutor {
         System.out.println("=".repeat(60));
         System.out.printf("  Source file:      %s%n", jsonlPath);
         System.out.printf("  Speed factor:     %.1fx%n", speedFactor);
+        System.out.printf("  Original traffic: %.1f seconds%n", originalDurationMs / 1000.0);
+        System.out.printf("  Scheduled replay: %.1f seconds (expected at %.1fx)%n", scheduledDurationMs / 1000.0,
+                speedFactor);
+        System.out.printf("  Actual execution: %.1f seconds (wall-clock)%n", actualDurationMs / 1000.0);
+        System.out.println("-".repeat(60));
         System.out.printf("  Total events:     %d%n", totalEvents.get());
         System.out.printf("  Successful:       %d%n", successCount.get());
         System.out.printf("  Failed:           %d%n", failCount.get());
         System.out.printf("  Avg latency:      %.1f ms%n",
                 successCount.get() > 0 ? (double) totalLatencyMs.get() / successCount.get() : 0);
-        System.out.printf("  Replay duration:  %.1f seconds%n", actualDurationMs / 1000.0);
         System.out.println("=".repeat(60));
 
         // Save CSV
@@ -658,16 +683,19 @@ public class TrafficReplayExecutor {
         if (generateHtml && !csvRows.isEmpty()) {
             try {
                 // Convert CSV rows to ReplayEvents
+                // CSV columns:
+                // index,scheduledMs,actualMs,latencyMs,responseMs,success,endpoint,userId,error
                 List<ReplayReportWriter.ReplayEvent> replayEvents = new ArrayList<>();
                 for (String[] row : csvRows) {
                     replayEvents.add(new ReplayReportWriter.ReplayEvent(
                             Long.parseLong(row[1]), // scheduledMs
                             Long.parseLong(row[2]), // actualMs
                             Long.parseLong(row[3]), // latencyMs
-                            "true".equals(row[4]), // success
-                            row[5], // endpoint
-                            row[6], // userId
-                            row[7] // error
+                            // row[4] is responseMs (already computed, skip for ReplayEvent)
+                            "true".equals(row[5]), // success
+                            row[6], // endpoint
+                            row[7], // userId
+                            row[8] // error
                     ));
                 }
 
@@ -689,6 +717,7 @@ public class TrafficReplayExecutor {
                         replayEvents,
                         speedFactor,
                         actualDurationMs,
+                        originalDurationMs,
                         htmlPath);
                 System.out.println("HTML report saved to: " + savedPath);
             } catch (IOException e) {

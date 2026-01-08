@@ -49,7 +49,7 @@ public class ReplayReportWriter {
      * Generate HTML report from pre-aggregated stats.
      */
     public static String generateHtmlFromStats(
-            String title, double speedFactor, long durationMs,
+            String title, double speedFactor, long durationMs, long originalDurationMs,
             int totalEvents, int successCount, int failCount,
             double avgLatency, long minLatency, long maxLatency, long p50, long p95, long p99,
             List<String> timeLabels, List<Integer> eventsPerSecond, List<Integer> successPerSecond,
@@ -94,7 +94,7 @@ public class ReplayReportWriter {
         String successRateClass = successRate >= 95 ? "success" : (successRate >= 80 ? "warning" : "danger");
 
         return generateHtmlTemplate(
-                title, timestamp, speedFactor, durationMs,
+                title, timestamp, speedFactor, durationMs, originalDurationMs,
                 totalEvents, successCount, failCount, successRate, successRateClass,
                 avgLatency, minLatency, maxLatency, p50, p95, p99,
                 toJson(timeLabels), toJson(eventsPerSecond),
@@ -110,7 +110,7 @@ public class ReplayReportWriter {
      * Generate HTML report from full event list (legacy/non-streaming mode).
      */
     public static String generateHtml(String title, List<ReplayEvent> events,
-            double speedFactor, long durationMs) {
+            double speedFactor, long durationMs, long originalDurationMs) {
 
         // Compute stats
         int totalEvents = events.size();
@@ -217,7 +217,7 @@ public class ReplayReportWriter {
         }
 
         return generateHtmlFromStats(
-                title, speedFactor, durationMs,
+                title, speedFactor, durationMs, originalDurationMs,
                 totalEvents, successCount, failCount,
                 avgLatency, minLatency, maxLatency, p50, p95, p99,
                 timeLabels, eventsList, successList, failList, avgLatencyList,
@@ -232,7 +232,7 @@ public class ReplayReportWriter {
     }
 
     private static String generateHtmlTemplate(
-            String title, String timestamp, double speedFactor, long durationMs,
+            String title, String timestamp, double speedFactor, long durationMs, long originalDurationMs,
             int totalEvents, int successCount, int failCount, double successRate, String successRateClass,
             double avgLatency, long minLatency, long maxLatency, long p50, long p95, long p99,
             String timeLabels, String eventsPerSecond, String successPerSecond, String failPerSecond,
@@ -553,7 +553,7 @@ public class ReplayReportWriter {
                         """,
                 title, // <title>
                 title, speedFactor, // h1 with badge
-                timestamp, durationMs / 1000.0, (durationMs * speedFactor) / 60000.0, // meta
+                timestamp, durationMs / 1000.0, originalDurationMs / 60000.0, // meta
                 totalEvents, // total events card
                 successRateClass, successRate, // success rate card
                 avgLatency, // avg latency card
@@ -574,8 +574,8 @@ public class ReplayReportWriter {
      * Save HTML report to file.
      */
     public static String saveHtml(String title, List<ReplayEvent> events,
-            double speedFactor, long durationMs, String outputPath) throws IOException {
-        String html = generateHtml(title, events, speedFactor, durationMs);
+            double speedFactor, long durationMs, long originalDurationMs, String outputPath) throws IOException {
+        String html = generateHtml(title, events, speedFactor, durationMs, originalDurationMs);
 
         String htmlPath = outputPath.endsWith(".html") ? outputPath : outputPath + ".html";
 

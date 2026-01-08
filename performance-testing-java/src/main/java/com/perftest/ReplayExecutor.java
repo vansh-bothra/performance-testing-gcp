@@ -175,6 +175,7 @@ public class ReplayExecutor {
                         replayEvents,
                         speedFactor,
                         actualDurationMs,
+                        originalDurationMs,
                         htmlPath);
                 System.out.println("\nHTML report saved to: " + savedPath);
             } catch (IOException e) {

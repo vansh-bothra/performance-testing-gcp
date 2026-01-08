@@ -87,6 +87,7 @@ public class StreamingReplayExecutor {
     // Timing
     private volatile long replayStartTime;
     private volatile long firstEventTs = -1;
+    private volatile long lastEventTs = -1;
 
     // Latch to track completion
     private final AtomicInteger pendingRequests = new AtomicInteger(0);
@@ -209,7 +210,8 @@ public class StreamingReplayExecutor {
 
         // Generate HTML report if requested
         if (generateHtml && !sampledEvents.isEmpty()) {
-            generateHtmlReport(actualDurationMs);
+            long originalDurationMs = lastEventTs > firstEventTs ? lastEventTs - firstEventTs : actualDurationMs;
+            generateHtmlReport(actualDurationMs, originalDurationMs);
         }
 
         // Return results
@@ -336,6 +338,7 @@ public class StreamingReplayExecutor {
         if (firstEventTs < 0) {
             firstEventTs = eventTs;
         }
+        lastEventTs = eventTs;
 
         // Calculate when to fire this event (relative to first event, scaled by speed)
         long delayMs = (long) ((eventTs - firstEventTs) / speedFactor);
@@ -670,7 +673,7 @@ public class StreamingReplayExecutor {
     /**
      * Generate HTML report from sampled events.
      */
-    private void generateHtmlReport(long actualDurationMs) {
+    private void generateHtmlReport(long actualDurationMs, long originalDurationMs) {
         try {
             String baseName = Paths.get(jsonlPath).getFileName().toString().replace(".jsonl", "");
             String htmlPath = String.format("streaming_replay_%s_%.0fx.html", baseName, speedFactor);
@@ -735,12 +738,12 @@ public class StreamingReplayExecutor {
 
             // Generate HTML using the stats-based method
             String html = ReplayReportWriter.generateHtmlFromStats(
-                    "Streaming Replay: " + baseName, speedFactor, actualDurationMs,
+                    "Streaming Replay: " + baseName, speedFactor, actualDurationMs, originalDurationMs,
                     totalEvents.get(), successCount.get(), failCount.get(),
                     avg, min, max, p50, p95, p99,
                     timeLabels, eventsPerSecond, successPerSecond, failPerSecond, avgLatencyPerSecond,
                     histogramLabels, histogramBins,
-                    sampledEvents, new HashMap<>(errorCountsMap));
+                    sampledEvents, new HashMap<String, Integer>(errorCountsMap));
 
             String outputPath = htmlPath.endsWith(".html") ? htmlPath : htmlPath + ".html";
             try (PrintWriter writer = new PrintWriter(new FileWriter(outputPath))) {
