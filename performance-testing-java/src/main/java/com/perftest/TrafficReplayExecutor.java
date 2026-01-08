@@ -228,9 +228,10 @@ public class TrafficReplayExecutor {
     }
 
     /**
-     * Fire a request based on the traffic event.
+     * Fire a request based on the traffic event (async).
+     * The latch is decremented when the async request completes.
      */
-    private void fireRequest(TrafficEvent event, long scheduledTimeMs) {
+    private void fireRequest(TrafficEvent event, long scheduledTimeMs, CountDownLatch latch) {
         totalEvents.incrementAndGet();
         long actualStartTime = System.currentTimeMillis();
         long actualTimeOffset = actualStartTime - replayStartTime;
@@ -243,49 +244,57 @@ public class TrafficReplayExecutor {
             log(String.format("[DRY-RUN] %s for user %s", endpoint, userId));
             successCount.incrementAndGet();
             addCsvRow(event.index, scheduledTimeMs, actualTimeOffset, 1, true, endpoint, userId, "");
+            latch.countDown();
             return;
         }
 
-        long start = System.nanoTime();
-        String error = "";
-        boolean success = false;
-        long latencyMs = 0;
+        long startNanos = System.nanoTime();
 
+        // Get the appropriate async method
+        CompletableFuture<Void> requestFuture;
         try {
-            switch (endpoint) {
-                case "/date-picker":
-                    fireGetDatePicker(userId);
-                    break;
-                case "/postPickerStatus":
-                    firePostPickerStatus(session);
-                    break;
-                case "/crossword":
-                    fireGetCrossword(userId, session);
-                    break;
-                case "/api/v1/plays":
-                    firePostPlays(userId, session);
-                    break;
-                default:
+            requestFuture = switch (endpoint) {
+                case "/date-picker" -> fireGetDatePickerAsync(userId);
+                case "/postPickerStatus" -> firePostPickerStatusAsync(session);
+                case "/crossword" -> fireGetCrosswordAsync(userId, session);
+                case "/api/v1/plays" -> firePostPlaysAsync(userId, session);
+                default -> {
                     log("Unknown endpoint: " + endpoint);
-            }
-
-            latencyMs = (System.nanoTime() - start) / 1_000_000;
-            totalLatencyMs.addAndGet(latencyMs);
-            successCount.incrementAndGet();
-            success = true;
-
-            if (verbose) {
-                log(String.format("OK %s user=%s latency=%dms", endpoint, userId, latencyMs));
-            }
-
+                    yield CompletableFuture.completedFuture(null);
+                }
+            };
         } catch (Exception e) {
-            latencyMs = (System.nanoTime() - start) / 1_000_000;
+            // Handle immediate exceptions (e.g., null session)
+            long latencyMs = (System.nanoTime() - startNanos) / 1_000_000;
             failCount.incrementAndGet();
-            error = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+            String error = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
             log(String.format("FAIL %s user=%s: %s", endpoint, userId, error));
+            addCsvRow(event.index, scheduledTimeMs, actualTimeOffset, latencyMs, false, endpoint, userId, error);
+            latch.countDown();
+            return;
         }
 
-        addCsvRow(event.index, scheduledTimeMs, actualTimeOffset, latencyMs, success, endpoint, userId, error);
+        // Handle async completion
+        requestFuture.whenComplete((result, ex) -> {
+            long latencyMs = (System.nanoTime() - startNanos) / 1_000_000;
+            boolean success = (ex == null);
+            String error = "";
+
+            if (success) {
+                successCount.incrementAndGet();
+                totalLatencyMs.addAndGet(latencyMs);
+                if (verbose) {
+                    log(String.format("OK %s user=%s latency=%dms", endpoint, userId, latencyMs));
+                }
+            } else {
+                failCount.incrementAndGet();
+                error = ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName();
+                log(String.format("FAIL %s user=%s: %s", endpoint, userId, error));
+            }
+
+            addCsvRow(event.index, scheduledTimeMs, actualTimeOffset, latencyMs, success, endpoint, userId, error);
+            latch.countDown();
+        });
     }
 
     private void addCsvRow(int index, long scheduledMs, long actualMs, long latencyMs, boolean success,
@@ -307,7 +316,9 @@ public class TrafficReplayExecutor {
         lastResponseTimeMs.updateAndGet(current -> Math.max(current, responseMs));
     }
 
-    private void fireGetDatePicker(String userId) throws IOException {
+    private CompletableFuture<Void> fireGetDatePickerAsync(String userId) {
+        CompletableFuture<Void> future = new CompletableFuture<>();
+
         HttpUrl url = HttpUrl.parse(BASE_URL + "date-picker").newBuilder()
                 .addQueryParameter("set", SET_PARAM)
                 .addQueryParameter("uid", userId)
@@ -320,16 +331,33 @@ public class TrafficReplayExecutor {
                 .get()
                 .build();
 
-        try (Response response = client.newCall(request).execute()) {
-            if (!response.isSuccessful()) {
-                throw new IOException("HTTP " + response.code());
+        client.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                future.completeExceptionally(e);
             }
-        }
+
+            @Override
+            public void onResponse(Call call, Response response) {
+                try (response) {
+                    if (!response.isSuccessful()) {
+                        future.completeExceptionally(new IOException("HTTP " + response.code()));
+                    } else {
+                        future.complete(null);
+                    }
+                }
+            }
+        });
+
+        return future;
     }
 
-    private void firePostPickerStatus(UserSession session) throws IOException {
+    private CompletableFuture<Void> firePostPickerStatusAsync(UserSession session) {
+        CompletableFuture<Void> future = new CompletableFuture<>();
+
         if (session == null || session.loadToken == null) {
-            throw new IOException("No session for postPickerStatus");
+            future.completeExceptionally(new IOException("No session for postPickerStatus"));
+            return future;
         }
 
         JsonObject payload = new JsonObject();
@@ -344,14 +372,30 @@ public class TrafficReplayExecutor {
                 .post(RequestBody.create(GSON.toJson(payload), JSON_MEDIA_TYPE))
                 .build();
 
-        try (Response response = client.newCall(request).execute()) {
-            if (!response.isSuccessful()) {
-                throw new IOException("HTTP " + response.code());
+        client.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                future.completeExceptionally(e);
             }
-        }
+
+            @Override
+            public void onResponse(Call call, Response response) {
+                try (response) {
+                    if (!response.isSuccessful()) {
+                        future.completeExceptionally(new IOException("HTTP " + response.code()));
+                    } else {
+                        future.complete(null);
+                    }
+                }
+            }
+        });
+
+        return future;
     }
 
-    private void fireGetCrossword(String userId, UserSession session) throws IOException {
+    private CompletableFuture<Void> fireGetCrosswordAsync(String userId, UserSession session) {
+        CompletableFuture<Void> future = new CompletableFuture<>();
+
         String loadToken = session != null ? session.loadToken : "";
         String srcUrl = String.format("%sdate-picker?set=%s&uid=%s", BASE_URL, SET_PARAM, userId);
 
@@ -371,16 +415,33 @@ public class TrafficReplayExecutor {
                 .get()
                 .build();
 
-        try (Response response = client.newCall(request).execute()) {
-            if (!response.isSuccessful()) {
-                throw new IOException("HTTP " + response.code());
+        client.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                future.completeExceptionally(e);
             }
-        }
+
+            @Override
+            public void onResponse(Call call, Response response) {
+                try (response) {
+                    if (!response.isSuccessful()) {
+                        future.completeExceptionally(new IOException("HTTP " + response.code()));
+                    } else {
+                        future.complete(null);
+                    }
+                }
+            }
+        });
+
+        return future;
     }
 
-    private void firePostPlays(String userId, UserSession session) throws IOException {
+    private CompletableFuture<Void> firePostPlaysAsync(String userId, UserSession session) {
+        CompletableFuture<Void> future = new CompletableFuture<>();
+
         if (session == null || session.loadToken == null) {
-            throw new IOException("No session for plays");
+            future.completeExceptionally(new IOException("No session for plays"));
+            return future;
         }
 
         long ts = System.currentTimeMillis();
@@ -423,11 +484,25 @@ public class TrafficReplayExecutor {
                 .post(RequestBody.create(GSON.toJson(payload), JSON_MEDIA_TYPE))
                 .build();
 
-        try (Response response = client.newCall(request).execute()) {
-            if (!response.isSuccessful()) {
-                throw new IOException("HTTP " + response.code());
+        client.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                future.completeExceptionally(e);
             }
-        }
+
+            @Override
+            public void onResponse(Call call, Response response) {
+                try (response) {
+                    if (!response.isSuccessful()) {
+                        future.completeExceptionally(new IOException("HTTP " + response.code()));
+                    } else {
+                        future.complete(null);
+                    }
+                }
+            }
+        });
+
+        return future;
     }
 
     private String randomDigitString(int length) {
@@ -611,13 +686,8 @@ public class TrafficReplayExecutor {
             long scaledDelay = (long) (cumulativeDelayMs / speedFactor);
 
             final long scheduledTime = scaledDelay;
-            scheduler.schedule(() -> {
-                try {
-                    fireRequest(event, scheduledTime);
-                } finally {
-                    latch.countDown();
-                }
-            }, scaledDelay, TimeUnit.MILLISECONDS);
+            // Latch is now passed to fireRequest() and decremented in async callback
+            scheduler.schedule(() -> fireRequest(event, scheduledTime, latch), scaledDelay, TimeUnit.MILLISECONDS);
 
             cumulativeDelayMs += event.delayMs;
         }
