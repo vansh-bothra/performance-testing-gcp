@@ -44,12 +44,24 @@ USER_ID_PARAM_PATTERN = re.compile(r'\buserId:\s*(\S+)')
 
 # Pattern to extract loadToken for decoding
 LOAD_TOKEN_PATTERN = re.compile(r'"loadToken":\s*"([^"]+)"')
+LOAD_TOKEN_PARAM_PATTERN = re.compile(r'\bloadToken:\s*(\S+)')
+
+# Patterns for series and puzzleId
+SERIES_PATTERN = re.compile(r'\bseries:\s*(\S+)')
+PUZZLE_ID_JSON_PATTERN = re.compile(r'"id":\s*"([^"]+)"')
+PUZZLE_ID_PARAM_PATTERN = re.compile(r'\bpuzzleId:\s*(\S+)')
+PUZZLE_IDS_PARAM_PATTERN = re.compile(r'\bpuzzleIds:\s*(\S+)')
+
+# Pattern for offset (for pagination/lazy loading)
+OFFSET_PATTERN = re.compile(r'\boffset:\s*(\d+)')
 
 # Endpoints to include
 ALLOWED_ENDPOINTS = {
     '/api/v1/plays',
     '/api/v1/puzzles',
+    '/api/v1/streaks',
     '/postPickerStatus',
+    '/date-picker',
     # Game pages - all normalized to /crossword
     '/crossword',
     '/jigsaw',
@@ -158,11 +170,48 @@ def process_line(line: str) -> Optional[dict]:
     if endpoint in {'/api/v1/plays', '/postPickerStatus'} and userId is None:
         return None
     
+    # Extract series (try param first, then JSON for POST requests)
+    series = None
+    series_match = SERIES_PATTERN.search(line)
+    if series_match:
+        series = series_match.group(1).rstrip(',')
+    if not series:
+        # Try JSON pattern for POST requests
+        series_json = re.search(r'"series":\s*"([^"]+)"', line)
+        if series_json:
+            series = series_json.group(1)
+    
+    # Extract puzzleId (try multiple patterns)
+    puzzleId = None
+    # Try puzzleIds: param (for GET /api/v1/plays)
+    pid_match = PUZZLE_IDS_PARAM_PATTERN.search(line)
+    if pid_match:
+        puzzleId = pid_match.group(1).rstrip(',')
+    else:
+        # Try puzzleId: param
+        pid_match = PUZZLE_ID_PARAM_PATTERN.search(line)
+        if pid_match:
+            puzzleId = pid_match.group(1).rstrip(',')
+        else:
+            # Try "id": in JSON payload
+            pid_match = PUZZLE_ID_JSON_PATTERN.search(line)
+            if pid_match:
+                puzzleId = pid_match.group(1)
+    
+    # Extract offset (for pagination/lazy loading)
+    offset = None
+    offset_match = OFFSET_PATTERN.search(line)
+    if offset_match:
+        offset = int(offset_match.group(1))
+    
     return {
         'ts': ts,
         'endpoint': endpoint,
         'method': method,
         'userId': userId,
+        'series': series,
+        'puzzleId': puzzleId,
+        'offset': offset,
     }
 
 
@@ -202,17 +251,8 @@ def main():
     # Sort by timestamp (logs may not be perfectly ordered)
     events.sort(key=lambda x: x['ts'])
     
-    # Mark last request for each user
-    print(f"[Info] Marking last requests per user...", file=sys.stderr)
-    seen_users = set()
-    is_last_req = [0] * len(events)
-    
-    for i in range(len(events) - 1, -1, -1):
-        user_id = events[i].get('userId')
-        if user_id and user_id not in seen_users:
-            is_last_req[i] = 1
-            seen_users.add(user_id)
-    
+    # Count unique users
+    seen_users = {e.get('userId') for e in events if e.get('userId')}
     print(f"[Info] Found {len(seen_users):,} unique users", file=sys.stderr)
     
     # Determine output path
@@ -244,8 +284,10 @@ def main():
             'endpoint': event['endpoint'],
             'method': event['method'],
             'userId': event['userId'],
+            'series': event.get('series'),
+            'puzzleId': event.get('puzzleId'),
+            'offset': event.get('offset'),
             'delayMs': delay_ms,
-            'isLastReq': is_last_req[i],
         }
         
         # Track stats
