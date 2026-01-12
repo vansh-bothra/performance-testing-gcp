@@ -36,3 +36,4 @@ pmm--*.log
 traffic_final.jsonl
 traffic_4hr.jsonl
 pplmagt1.jsonl
+auth_config.json
