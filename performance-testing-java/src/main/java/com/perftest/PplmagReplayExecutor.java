@@ -339,14 +339,33 @@ public class PplmagReplayExecutor {
     // =========================================================================
 
     private static final String SET_PARAM = "gandalf";
+    private static final String FALLBACK_PUZZLE_ID = "ce996e5f";
 
     /**
      * Pre-warm a (userId, puzzleId) combination by fetching /crossword.
      * URL: /crossword?id={puzzleId}&set=gandalf&uid={userId}
+     * If rawL is not found, falls back to a known valid puzzleId.
      */
     private UserSession prewarmUser(String userId, String puzzleId) throws IOException {
+        // Try with original puzzleId first
+        UserSession session = fetchCrosswordSession(userId, puzzleId);
+
+        // If loadToken is empty and we're not already using fallback, try with fallback
+        // puzzleId
+        if ((session.loadToken == null || session.loadToken.isEmpty())
+                && !puzzleId.equals(FALLBACK_PUZZLE_ID)) {
+            session = fetchCrosswordSession(userId, FALLBACK_PUZZLE_ID);
+        }
+
+        return session;
+    }
+
+    /**
+     * Fetch crossword page and extract session tokens.
+     */
+    private UserSession fetchCrosswordSession(String userId, String puzzleId) throws IOException {
         HttpUrl crosswordUrl = HttpUrl.parse(BASE_URL + "crossword").newBuilder()
-                .addQueryParameter("id", puzzleId) // puzzle ID, not user ID
+                .addQueryParameter("id", puzzleId)
                 .addQueryParameter("set", SET_PARAM)
                 .addQueryParameter("uid", userId)
                 .build();
@@ -392,7 +411,6 @@ public class PplmagReplayExecutor {
         }
 
         return new UserSession(loadToken, playId);
-
     }
 
     /**
