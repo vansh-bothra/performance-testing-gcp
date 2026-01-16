@@ -966,7 +966,7 @@ public class TrafficReplayExecutor {
             System.out.println("  --dry-run              Don't actually send requests");
             System.out.println("  --html                 Generate HTML report");
             System.out.println("  --save-sessions        Pre-warm users and save sessions to sessions.json");
-            System.out.println("  -- sessions        Load sessions from sessions.json (skip pre-warming)");
+            System.out.println("  --load-sessions        Load sessions from sessions.json (skip pre-warming)");
             System.out.println("  --fetch-cdn            Fetch CDN resources after date-picker and crossword");
             System.out.println("  --cdn-env <env>        CDN environment prefix (default: cdn-test)");
             System.out.println("  --cdn-path <path>      CDN path prefix (default: pmm)");
