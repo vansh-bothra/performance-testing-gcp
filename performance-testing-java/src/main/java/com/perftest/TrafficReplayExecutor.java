@@ -43,6 +43,23 @@ public class TrafficReplayExecutor {
 
     private static final int PREWARM_THREADS = 100;
 
+    // CDN resource paths (relative to cdnBaseUrl/cdnPath/cdnCommit/)
+    private static final String[] DATE_PICKER_CDN_PATHS = {
+            "css/date-picker-min.css",
+            "js/picker-min.js"
+    };
+
+    private static final String[] CROSSWORD_CDN_PATHS = {
+            "css/crossword-player-min.css",
+            "js/c-min.js"
+    };
+
+    // External CDN resources (fixed URLs, e.g., font-awesome)
+    private static final String[] EXTERNAL_CDN_URLS = {
+            "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.0/css/all.min.css",
+            "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.0/webfonts/fa-solid-900.woff2"
+    };
+
     private final String jsonlPath;
     private final double speedFactor;
     private final boolean verbose;
@@ -51,6 +68,12 @@ public class TrafficReplayExecutor {
     private final boolean saveSessions;
     private final boolean loadSessions;
     private final String sessionsFile; // Computed from input filename
+
+    // CDN configuration
+    private final boolean fetchCdn;
+    private final String cdnEnv; // e.g., "cdn-test" or "cdn-prod"
+    private final String cdnPath;
+    private final String cdnCommit;
 
     private final OkHttpClient client;
     private final ScheduledExecutorService scheduler;
@@ -96,7 +119,8 @@ public class TrafficReplayExecutor {
     }
 
     public TrafficReplayExecutor(String jsonlPath, double speedFactor, boolean verbose, boolean dryRun,
-            boolean generateHtml, boolean saveSessions, boolean loadSessions) {
+            boolean generateHtml, boolean saveSessions, boolean loadSessions,
+            boolean fetchCdn, String cdnEnv, String cdnPath, String cdnCommit) {
         this.jsonlPath = jsonlPath;
         this.speedFactor = speedFactor;
         this.verbose = verbose;
@@ -104,6 +128,12 @@ public class TrafficReplayExecutor {
         this.generateHtml = generateHtml;
         this.saveSessions = saveSessions;
         this.loadSessions = loadSessions;
+
+        // CDN configuration
+        this.fetchCdn = fetchCdn;
+        this.cdnEnv = cdnEnv;
+        this.cdnPath = cdnPath;
+        this.cdnCommit = cdnCommit;
 
         // Compute sessions filename from input file: traffic_final_10min.jsonl ->
         // sessions_traffic_final_10min.json
@@ -258,9 +288,21 @@ public class TrafficReplayExecutor {
         CompletableFuture<Void> requestFuture;
         try {
             requestFuture = switch (endpoint) {
-                case "/date-picker" -> fireGetDatePickerAsync(userId);
+                case "/date-picker" -> {
+                    CompletableFuture<Void> main = fireGetDatePickerAsync(userId);
+                    if (fetchCdn) {
+                        yield main.thenCompose(v -> fetchCdnResourcesAsync(DATE_PICKER_CDN_PATHS, EXTERNAL_CDN_URLS));
+                    }
+                    yield main;
+                }
                 case "/postPickerStatus" -> firePostPickerStatusAsync(session);
-                case "/crossword" -> fireGetCrosswordAsync(userId, session);
+                case "/crossword" -> {
+                    CompletableFuture<Void> main = fireGetCrosswordAsync(userId, session);
+                    if (fetchCdn) {
+                        yield main.thenCompose(v -> fetchCdnResourcesAsync(CROSSWORD_CDN_PATHS, null));
+                    }
+                    yield main;
+                }
                 case "/api/v1/plays" -> firePostPlaysAsync(userId, session);
                 default -> {
                     log("Unknown endpoint: " + endpoint);
@@ -349,6 +391,89 @@ public class TrafficReplayExecutor {
                     } else {
                         future.complete(null);
                     }
+                }
+            }
+        });
+
+        return future;
+    }
+
+    /**
+     * Build a CDN URL from the configurable components.
+     * Format: https://{cdnEnv}.amuselabs.com/{cdnPath}/{cdnCommit}/{path}
+     */
+    private String buildCdnUrl(String path) {
+        return String.format("https://%s.amuselabs.com/%s/%s/%s", cdnEnv, cdnPath, cdnCommit, path);
+    }
+
+    /**
+     * Fetch CDN resources asynchronously in parallel.
+     * 
+     * @param paths        Relative paths to fetch (will be prefixed with CDN base)
+     * @param externalUrls External URLs to fetch as-is
+     * @return CompletableFuture that completes when all CDN fetches are done
+     */
+    private CompletableFuture<Void> fetchCdnResourcesAsync(String[] paths, String[] externalUrls) {
+        List<CompletableFuture<Void>> futures = new ArrayList<>();
+
+        // Fetch relative CDN paths
+        for (String path : paths) {
+            String url = buildCdnUrl(path);
+            futures.add(fetchSingleCdnResourceAsync(url));
+        }
+
+        // Fetch external URLs
+        if (externalUrls != null) {
+            for (String url : externalUrls) {
+                futures.add(fetchSingleCdnResourceAsync(url));
+            }
+        }
+
+        return CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]));
+    }
+
+    /**
+     * Fetch a single CDN resource asynchronously.
+     */
+    private CompletableFuture<Void> fetchSingleCdnResourceAsync(String url) {
+        CompletableFuture<Void> future = new CompletableFuture<>();
+        long startNanos = System.nanoTime();
+
+        Request request = new Request.Builder()
+                .url(url)
+                .addHeader("User-Agent", "Mozilla/5.0")
+                .get()
+                .build();
+
+        client.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(Call call, IOException e) {
+                long latencyMs = (System.nanoTime() - startNanos) / 1_000_000;
+                if (verbose) {
+                    log(String.format("CDN FAIL %s: %s (%.0fms)", url, e.getMessage(), (double) latencyMs));
+                }
+                // Don't fail the main request if CDN fails
+                future.complete(null);
+            }
+
+            @Override
+            public void onResponse(Call call, Response response) {
+                try (response) {
+                    long latencyMs = (System.nanoTime() - startNanos) / 1_000_000;
+                    // Consume body to complete transfer
+                    if (response.body() != null) {
+                        response.body().bytes();
+                    }
+                    if (verbose) {
+                        String shortUrl = url.substring(url.lastIndexOf('/') + 1);
+                        if (shortUrl.contains("?")) {
+                            shortUrl = shortUrl.substring(0, shortUrl.indexOf('?'));
+                        }
+                        log(String.format("CDN OK %s: %dms", shortUrl, latencyMs));
+                    }
+                    future.complete(null);
+                } catch (IOException e) {
+                    future.complete(null);
                 }
             }
         });
@@ -837,12 +962,16 @@ public class TrafficReplayExecutor {
         if (args.length < 1) {
             System.out.println("Usage: TrafficReplayExecutor <jsonl-file> [options]");
             System.out.println("Options:");
-            System.out.println("  --speed <factor>   Speed factor (default: 1.0, e.g., 5.0 = 5x faster)");
-            System.out.println("  --dry-run          Don't actually send requests");
-            System.out.println("  --html             Generate HTML report");
-            System.out.println("  --save-sessions    Pre-warm users and save sessions to sessions.json");
-            System.out.println("  --load-sessions    Load sessions from sessions.json (skip pre-warming)");
-            System.out.println("  -v, --verbose      Verbose output");
+            System.out.println("  --speed <factor>       Speed factor (default: 1.0, e.g., 5.0 = 5x faster)");
+            System.out.println("  --dry-run              Don't actually send requests");
+            System.out.println("  --html                 Generate HTML report");
+            System.out.println("  --save-sessions        Pre-warm users and save sessions to sessions.json");
+            System.out.println("  --load-sessions        Load sessions from sessions.json (skip pre-warming)");
+            System.out.println("  --fetch-cdn            Fetch CDN resources after date-picker and crossword");
+            System.out.println("  --cdn-env <env>        CDN environment prefix (default: cdn-test)");
+            System.out.println("  --cdn-path <path>      CDN path prefix (default: pmm)");
+            System.out.println("  --cdn-commit <id>      CDN commit ID (default: dd97891)");
+            System.out.println("  -v, --verbose          Verbose output");
             return;
         }
 
@@ -853,6 +982,10 @@ public class TrafficReplayExecutor {
         boolean html = false;
         boolean saveSessions = false;
         boolean loadSessions = false;
+        boolean fetchCdn = false;
+        String cdnEnv = "cdn-test";
+        String cdnPath = "pmm";
+        String cdnCommit = "dd97891";
 
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
@@ -871,6 +1004,18 @@ public class TrafficReplayExecutor {
                 case "--load-sessions":
                     loadSessions = true;
                     break;
+                case "--fetch-cdn":
+                    fetchCdn = true;
+                    break;
+                case "--cdn-env":
+                    cdnEnv = args[++i];
+                    break;
+                case "--cdn-path":
+                    cdnPath = args[++i];
+                    break;
+                case "--cdn-commit":
+                    cdnCommit = args[++i];
+                    break;
                 case "-v":
                 case "--verbose":
                     verbose = true;
@@ -879,7 +1024,7 @@ public class TrafficReplayExecutor {
         }
 
         TrafficReplayExecutor executor = new TrafficReplayExecutor(jsonlPath, speedFactor, verbose, dryRun, html,
-                saveSessions, loadSessions);
+                saveSessions, loadSessions, fetchCdn, cdnEnv, cdnPath, cdnCommit);
         try {
             executor.execute();
         } catch (IOException e) {
