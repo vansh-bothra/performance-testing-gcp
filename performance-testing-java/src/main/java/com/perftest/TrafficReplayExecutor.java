@@ -6,8 +6,10 @@ import com.google.gson.JsonParser;
 import com.google.gson.reflect.TypeToken;
 import okhttp3.*;
 
+import javax.net.ssl.*;
 import java.io.*;
 import java.lang.reflect.Type;
+import java.security.cert.X509Certificate;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.LocalDateTime;
@@ -36,10 +38,12 @@ public class TrafficReplayExecutor {
     private static final MediaType JSON_MEDIA_TYPE = MediaType.get("application/json; charset=utf-8");
     private static final Gson GSON = new Gson();
 
+    // Configurable via CLI
+    private final String baseUrl;
+
     // Hardcoded config (matching ApiConfig)
-    private static final String BASE_URL = "https://cdn-test.amuselabs.com/pmm/";
-    private static final String SET_PARAM = "gandalf";
-    private static final String PUZZLE_ID = "d4725144";
+    private static final String SET_PARAM = "malhar-1";
+    private static final String PUZZLE_ID = "7a3720d7";
 
     private static final int PREWARM_THREADS = 100;
 
@@ -67,6 +71,7 @@ public class TrafficReplayExecutor {
     private final boolean generateHtml;
     private final boolean saveSessions;
     private final boolean loadSessions;
+    private final boolean noSsl;
     private final String sessionsFile; // Computed from input filename
 
     // CDN configuration
@@ -118,16 +123,18 @@ public class TrafficReplayExecutor {
         int isLastReq;
     }
 
-    public TrafficReplayExecutor(String jsonlPath, double speedFactor, boolean verbose, boolean dryRun,
-            boolean generateHtml, boolean saveSessions, boolean loadSessions,
+    public TrafficReplayExecutor(String jsonlPath, String baseUrl, double speedFactor, boolean verbose, boolean dryRun,
+            boolean generateHtml, boolean saveSessions, boolean loadSessions, boolean noSsl,
             boolean fetchCdn, String cdnEnv, String cdnPath, String cdnCommit) {
         this.jsonlPath = jsonlPath;
+        this.baseUrl = baseUrl;
         this.speedFactor = speedFactor;
         this.verbose = verbose;
         this.dryRun = dryRun;
         this.generateHtml = generateHtml;
         this.saveSessions = saveSessions;
         this.loadSessions = loadSessions;
+        this.noSsl = noSsl;
 
         // CDN configuration
         this.fetchCdn = fetchCdn;
@@ -145,16 +152,68 @@ public class TrafficReplayExecutor {
         dispatcher.setMaxRequests(200);
         dispatcher.setMaxRequestsPerHost(100);
 
-        this.client = new OkHttpClient.Builder()
+        this.client = noSsl ? createInsecureClient(dispatcher) : createSecureClient(dispatcher);
+
+        this.scheduler = Executors.newScheduledThreadPool(20);
+        this.prewarmExecutor = Executors.newFixedThreadPool(PREWARM_THREADS);
+    }
+
+    /**
+     * Create a secure OkHttpClient with normal SSL certificate validation.
+     */
+    private OkHttpClient createSecureClient(Dispatcher dispatcher) {
+        return new OkHttpClient.Builder()
                 .connectTimeout(30, TimeUnit.SECONDS)
                 .readTimeout(30, TimeUnit.SECONDS)
                 .writeTimeout(30, TimeUnit.SECONDS)
                 .connectionPool(new ConnectionPool(100, 5, TimeUnit.MINUTES))
                 .dispatcher(dispatcher)
                 .build();
+    }
 
-        this.scheduler = Executors.newScheduledThreadPool(20);
-        this.prewarmExecutor = Executors.newFixedThreadPool(PREWARM_THREADS);
+    /**
+     * Create an insecure OkHttpClient that trusts all SSL certificates.
+     * WARNING: Only use for testing with self-signed certificates!
+     */
+    private OkHttpClient createInsecureClient(Dispatcher dispatcher) {
+        try {
+            // Create a trust manager that trusts all certificates
+            final TrustManager[] trustAllCerts = new TrustManager[] {
+                new X509TrustManager() {
+                    @Override
+                    public void checkClientTrusted(X509Certificate[] chain, String authType) {
+                        // Trust all clients
+                    }
+
+                    @Override
+                    public void checkServerTrusted(X509Certificate[] chain, String authType) {
+                        // Trust all servers
+                    }
+
+                    @Override
+                    public X509Certificate[] getAcceptedIssuers() {
+                        return new X509Certificate[0];
+                    }
+                }
+            };
+
+            // Install the all-trusting trust manager
+            final SSLContext sslContext = SSLContext.getInstance("TLS");
+            sslContext.init(null, trustAllCerts, new java.security.SecureRandom());
+            final SSLSocketFactory sslSocketFactory = sslContext.getSocketFactory();
+
+            return new OkHttpClient.Builder()
+                    .sslSocketFactory(sslSocketFactory, (X509TrustManager) trustAllCerts[0])
+                    .hostnameVerifier((hostname, session) -> true) // Trust all hostnames
+                    .connectTimeout(30, TimeUnit.SECONDS)
+                    .readTimeout(30, TimeUnit.SECONDS)
+                    .writeTimeout(30, TimeUnit.SECONDS)
+                    .connectionPool(new ConnectionPool(100, 5, TimeUnit.MINUTES))
+                    .dispatcher(dispatcher)
+                    .build();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to create insecure SSL client", e);
+        }
     }
 
     private void log(String msg) {
@@ -192,7 +251,7 @@ public class TrafficReplayExecutor {
      */
     private UserSession prewarmUser(String userId) throws IOException {
         // Step 1: GET date-picker to get loadToken
-        HttpUrl datePickerUrl = HttpUrl.parse(BASE_URL + "date-picker").newBuilder()
+        HttpUrl datePickerUrl = HttpUrl.parse(baseUrl + "date-picker").newBuilder()
                 .addQueryParameter("set", SET_PARAM)
                 .addQueryParameter("uid", userId)
                 .build();
@@ -224,9 +283,9 @@ public class TrafficReplayExecutor {
         }
 
         // Step 3: GET crossword to get playId
-        String srcUrl = String.format("%sdate-picker?set=%s&uid=%s", BASE_URL, SET_PARAM, userId);
+        String srcUrl = String.format("%sdate-picker?set=%s&uid=%s", baseUrl, SET_PARAM, userId);
 
-        HttpUrl crosswordUrl = HttpUrl.parse(BASE_URL + "crossword").newBuilder()
+        HttpUrl crosswordUrl = HttpUrl.parse(baseUrl + "crossword").newBuilder()
                 .addQueryParameter("id", PUZZLE_ID)
                 .addQueryParameter("set", SET_PARAM)
                 .addQueryParameter("picker", "date-picker")
@@ -365,7 +424,7 @@ public class TrafficReplayExecutor {
     private CompletableFuture<Void> fireGetDatePickerAsync(String userId) {
         CompletableFuture<Void> future = new CompletableFuture<>();
 
-        HttpUrl url = HttpUrl.parse(BASE_URL + "date-picker").newBuilder()
+        HttpUrl url = HttpUrl.parse(baseUrl + "date-picker").newBuilder()
                 .addQueryParameter("set", SET_PARAM)
                 .addQueryParameter("uid", userId)
                 .build();
@@ -496,7 +555,7 @@ public class TrafficReplayExecutor {
         payload.addProperty("reason", "displaying puzzle picker");
 
         Request request = new Request.Builder()
-                .url(BASE_URL + "postPickerStatus")
+                .url(baseUrl + "postPickerStatus")
                 .addHeader("Content-Type", "application/json")
                 .post(RequestBody.create(GSON.toJson(payload), JSON_MEDIA_TYPE))
                 .build();
@@ -526,9 +585,9 @@ public class TrafficReplayExecutor {
         CompletableFuture<Void> future = new CompletableFuture<>();
 
         String loadToken = session != null ? session.loadToken : "";
-        String srcUrl = String.format("%sdate-picker?set=%s&uid=%s", BASE_URL, SET_PARAM, userId);
+        String srcUrl = String.format("%sdate-picker?set=%s&uid=%s", baseUrl, SET_PARAM, userId);
 
-        HttpUrl url = HttpUrl.parse(BASE_URL + "crossword").newBuilder()
+        HttpUrl url = HttpUrl.parse(baseUrl + "crossword").newBuilder()
                 .addQueryParameter("id", PUZZLE_ID)
                 .addQueryParameter("set", SET_PARAM)
                 .addQueryParameter("picker", "date-picker")
@@ -608,7 +667,7 @@ public class TrafficReplayExecutor {
         payload.addProperty("secondaryState", randomDigitString(15));
 
         Request request = new Request.Builder()
-                .url(BASE_URL + "api/v1/plays")
+                .url(baseUrl + "api/v1/plays")
                 .addHeader("Content-Type", "application/json")
                 .post(RequestBody.create(GSON.toJson(payload), JSON_MEDIA_TYPE))
                 .build();
@@ -962,11 +1021,13 @@ public class TrafficReplayExecutor {
         if (args.length < 1) {
             System.out.println("Usage: TrafficReplayExecutor <jsonl-file> [options]");
             System.out.println("Options:");
+            System.out.println("  --base-url <url>       Base URL for the server (default: https://cdn-test.amuselabs.com/pmm/)");
             System.out.println("  --speed <factor>       Speed factor (default: 1.0, e.g., 5.0 = 5x faster)");
             System.out.println("  --dry-run              Don't actually send requests");
             System.out.println("  --html                 Generate HTML report");
             System.out.println("  --save-sessions        Pre-warm users and save sessions to sessions.json");
             System.out.println("  --load-sessions        Load sessions from sessions.json (skip pre-warming)");
+            System.out.println("  --no-ssl               Disable SSL certificate validation (for self-signed certs)");
             System.out.println("  --fetch-cdn            Fetch CDN resources after date-picker and crossword");
             System.out.println("  --cdn-env <env>        CDN environment prefix (default: cdn-test)");
             System.out.println("  --cdn-path <path>      CDN path prefix (default: pmm)");
@@ -976,12 +1037,14 @@ public class TrafficReplayExecutor {
         }
 
         String jsonlPath = args[0];
+        String baseUrl = "https://cdn-test.amuselabs.com/pmm/"; // default
         double speedFactor = 1.0;
         boolean verbose = false;
         boolean dryRun = false;
         boolean html = false;
         boolean saveSessions = false;
         boolean loadSessions = false;
+        boolean noSsl = false;
         boolean fetchCdn = false;
         String cdnEnv = "cdn-test";
         String cdnPath = "pmm";
@@ -989,6 +1052,9 @@ public class TrafficReplayExecutor {
 
         for (int i = 1; i < args.length; i++) {
             switch (args[i]) {
+                case "--base-url":
+                    baseUrl = args[++i];
+                    break;
                 case "--speed":
                     speedFactor = Double.parseDouble(args[++i]);
                     break;
@@ -1003,6 +1069,9 @@ public class TrafficReplayExecutor {
                     break;
                 case "--load-sessions":
                     loadSessions = true;
+                    break;
+                case "--no-ssl":
+                    noSsl = true;
                     break;
                 case "--fetch-cdn":
                     fetchCdn = true;
@@ -1023,8 +1092,8 @@ public class TrafficReplayExecutor {
             }
         }
 
-        TrafficReplayExecutor executor = new TrafficReplayExecutor(jsonlPath, speedFactor, verbose, dryRun, html,
-                saveSessions, loadSessions, fetchCdn, cdnEnv, cdnPath, cdnCommit);
+        TrafficReplayExecutor executor = new TrafficReplayExecutor(jsonlPath, baseUrl, speedFactor, verbose, dryRun, html,
+                saveSessions, loadSessions, noSsl, fetchCdn, cdnEnv, cdnPath, cdnCommit);
         try {
             executor.execute();
         } catch (IOException e) {
