@@ -324,7 +324,7 @@ public class TrafficReplayExecutor {
      * Fire a request based on the traffic event (async).
      * The latch is decremented when the async request completes.
      */
-    private void fireRequest(TrafficEvent event, long scheduledTimeMs, CountDownLatch latch) {
+    private void fireRequest(TrafficEvent event, long scheduledTimeMs, CountDownLatch latch, int totalEventCount) {
         totalEvents.incrementAndGet();
         long actualStartTime = System.currentTimeMillis();
         long actualTimeOffset = actualStartTime - replayStartTime;
@@ -389,12 +389,18 @@ public class TrafficReplayExecutor {
                 successCount.incrementAndGet();
                 totalLatencyMs.addAndGet(latencyMs);
                 if (verbose) {
-                    log(String.format("OK %s user=%s latency=%dms", endpoint, userId, latencyMs));
+                    int completed = totalEvents.get() - (int)latch.getCount() + 1;
+                    double percentage = (completed * 100.0) / totalEventCount;
+                    log(String.format("[%d/%d %.0f%%] OK %s user=%s latency=%dms", 
+                            completed, totalEventCount, percentage, endpoint, userId, latencyMs));
                 }
             } else {
                 failCount.incrementAndGet();
                 error = ex.getMessage() != null ? ex.getMessage() : ex.getClass().getSimpleName();
-                log(String.format("FAIL %s user=%s: %s", endpoint, userId, error));
+                int completed = totalEvents.get() - (int)latch.getCount() + 1;
+                double percentage = (completed * 100.0) / totalEventCount;
+                log(String.format("[%d/%d %.0f%%] FAIL %s user=%s: %s", 
+                        completed, totalEventCount, percentage, endpoint, userId, error));
             }
 
             addCsvRow(event.index, scheduledTimeMs, actualTimeOffset, latencyMs, success, endpoint, userId, error);
@@ -879,6 +885,7 @@ public class TrafficReplayExecutor {
         log("Phase 3: Starting replay...");
         replayStartTime = System.currentTimeMillis();
         CountDownLatch latch = new CountDownLatch(events.size());
+        final int totalEventCount = events.size();
 
         long cumulativeDelayMs = 0;
         for (TrafficEvent event : events) {
@@ -886,7 +893,7 @@ public class TrafficReplayExecutor {
 
             final long scheduledTime = scaledDelay;
             // Latch is now passed to fireRequest() and decremented in async callback
-            scheduler.schedule(() -> fireRequest(event, scheduledTime, latch), scaledDelay, TimeUnit.MILLISECONDS);
+            scheduler.schedule(() -> fireRequest(event, scheduledTime, latch, totalEventCount), scaledDelay, TimeUnit.MILLISECONDS);
 
             cumulativeDelayMs += event.delayMs;
         }
