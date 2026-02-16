@@ -1,4 +1,6 @@
-package com.perftest;
+package com.perftest.replay;
+
+import com.perftest.common.ApiConfig;
 
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;

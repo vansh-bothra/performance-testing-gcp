@@ -1,4 +1,6 @@
-package com.perftest;
+package com.perftest.flow;
+
+import com.perftest.common.ApiConfig;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
@@ -13,40 +15,21 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * API Flow V3 - Same as V2 but with additional CDN resource fetches.
- * 
- * Step 1 fetches:
- * 1. date-picker HTML
- * 2. date-picker-min.css
- * 3. picker-min.js
- * 4. font-awesome CSS
- * 5. font-awesome woff2 font
- * 
- * Step 3 fetches:
- * 1. crossword HTML
- * 2. crossword-player-min.css
- * 3. c-min.js
+ * Crossword API flow - executes the 4-step crossword interaction sequence.
+ * Each step builds on data from the previous one.
+ *
+ * Steps:
+ * 1. GET /date-picker → extract loadToken
+ * 2. POST /postPickerStatus
+ * 3. GET /crossword → extract playId
+ * 4. POST /api/v1/plays (10 iterations simulating gameplay)
  */
-public class ApiFlowV3 {
+public class CrosswordFlow {
 
     private static final MediaType JSON_MEDIA_TYPE = MediaType.get("application/json; charset=utf-8");
     private static final Random RANDOM = new Random();
     private static final String CHARS = "abcdefghijklmnopqrstuvwxyz";
     private static final Gson GSON = new Gson();
-
-    // CDN resources to fetch after date-picker (Step 1)
-    private static final String[] STEP1_CDN_RESOURCES = {
-            "https://cdn-test.amuselabs.com/pmm/dd97891/css/date-picker-min.css?v=6aee5d1bf087693e360c8e38dac76fecc9ad81a90abc9ed19cb26a97e1759919",
-            "https://cdn-test.amuselabs.com/pmm/dd97891/js/picker-min.js?v=6aee5d1bf087693e360c8e38dac76fecc9ad81a90abc9ed19cb26a97e1759919",
-            "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.0/css/all.min.css",
-            "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.2.0/webfonts/fa-solid-900.woff2"
-    };
-
-    // CDN resources to fetch after crossword page (Step 3)
-    private static final String[] STEP3_CDN_RESOURCES = {
-            "https://cdn-test.amuselabs.com/pmm/dd97891/css/crossword-player-min.css?v=6aee5d1bf087693e360c8e38dac76fecc9ad81a90abc9ed19cb26a97e1759919",
-            "https://cdn-test.amuselabs.com/pmm/dd97891/js/c-min.js?v=6aee5d1bf087693e360c8e38dac76fecc9ad81a90abc9ed19cb26a97e1759919"
-    };
 
     private final ApiConfig config;
     private final boolean verbose;
@@ -55,7 +38,7 @@ public class ApiFlowV3 {
     // Shared state between steps
     private final Map<String, Object> context = new HashMap<>();
 
-    public ApiFlowV3(ApiConfig config, boolean verbose) {
+    public CrosswordFlow(ApiConfig config, boolean verbose) {
         this.config = config;
         this.verbose = verbose;
         this.client = new OkHttpClient.Builder()
@@ -97,17 +80,15 @@ public class ApiFlowV3 {
     }
 
     // =========================================================================
-    // STEP 1: Hit the date picker page, grab the loadToken, THEN fetch CDN
-    // resources
+    // STEP 1: Hit the date picker page, grab the loadToken
     // =========================================================================
     public Map<String, Object> step1DatePicker() throws IOException {
         long startTimestamp = System.currentTimeMillis();
         String uid = config.getUid();
         context.put("uid", uid);
 
-        log(String.format("Step 1: GET /date-picker (uid=%s) + CDN resources", uid));
+        log(String.format("Step 1: GET /date-picker (uid=%s)", uid));
 
-        // 1. Fetch date-picker HTML
         HttpUrl url = HttpUrl.parse(config.getBaseUrl() + "date-picker").newBuilder()
                 .addQueryParameter("set", config.getSetParam())
                 .addQueryParameter("uid", uid)
@@ -121,9 +102,8 @@ public class ApiFlowV3 {
                 .build();
 
         long start = System.nanoTime();
-        double datePickerLatencyMs;
         try (Response response = client.newCall(request).execute()) {
-            datePickerLatencyMs = (System.nanoTime() - start) / 1_000_000.0;
+            double latencyMs = (System.nanoTime() - start) / 1_000_000.0;
 
             if (!response.isSuccessful()) {
                 throw new IOException("Unexpected response: " + response.code());
@@ -146,71 +126,20 @@ public class ApiFlowV3 {
             context.put("load_token", loadToken);
             context.put("params_json", paramsJson);
 
-            log(String.format("  date-picker: %.1fms", datePickerLatencyMs));
+            log(String.format("  done in %.1fms", latencyMs));
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("status_code", response.code());
+            result.put("uid", uid);
+            result.put("latency_ms", latencyMs);
+            result.put("start_timestamp", startTimestamp);
+            result.put("end_timestamp", System.currentTimeMillis());
+            return result;
         }
-
-        // 2. Fetch CDN resources (after decode)
-        List<Map<String, Object>> cdnResults = new ArrayList<>();
-        double totalCdnLatencyMs = 0;
-
-        for (String cdnUrl : STEP1_CDN_RESOURCES) {
-            Request cdnRequest = new Request.Builder()
-                    .url(cdnUrl)
-                    .addHeader("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-                    .get()
-                    .build();
-
-            long cdnStart = System.nanoTime();
-            try (Response cdnResponse = client.newCall(cdnRequest).execute()) {
-                double cdnLatencyMs = (System.nanoTime() - cdnStart) / 1_000_000.0;
-                totalCdnLatencyMs += cdnLatencyMs;
-
-                // Consume the body to complete the request
-                if (cdnResponse.body() != null) {
-                    cdnResponse.body().bytes();
-                }
-
-                Map<String, Object> cdnResult = new HashMap<>();
-                cdnResult.put("url", cdnUrl);
-                cdnResult.put("status_code", cdnResponse.code());
-                cdnResult.put("latency_ms", cdnLatencyMs);
-                cdnResult.put("success", cdnResponse.isSuccessful());
-                cdnResults.add(cdnResult);
-
-                String shortUrl = cdnUrl.substring(cdnUrl.lastIndexOf('/') + 1);
-                if (shortUrl.contains("?")) {
-                    shortUrl = shortUrl.substring(0, shortUrl.indexOf('?'));
-                }
-                log(String.format("  CDN %s: %.1fms", shortUrl, cdnLatencyMs));
-
-            } catch (IOException e) {
-                Map<String, Object> cdnResult = new HashMap<>();
-                cdnResult.put("url", cdnUrl);
-                cdnResult.put("error", e.getMessage());
-                cdnResult.put("success", false);
-                cdnResults.add(cdnResult);
-                log(String.format("  CDN error: %s", e.getMessage()));
-            }
-        }
-
-        double totalLatencyMs = datePickerLatencyMs + totalCdnLatencyMs;
-        log(String.format("  total: %.1fms (date-picker: %.1fms, CDN: %.1fms)",
-                totalLatencyMs, datePickerLatencyMs, totalCdnLatencyMs));
-
-        Map<String, Object> result = new HashMap<>();
-        result.put("status_code", 200);
-        result.put("uid", uid);
-        result.put("latency_ms", totalLatencyMs);
-        result.put("date_picker_latency_ms", datePickerLatencyMs);
-        result.put("cdn_latency_ms", totalCdnLatencyMs);
-        result.put("cdn_results", cdnResults);
-        result.put("start_timestamp", startTimestamp);
-        result.put("end_timestamp", System.currentTimeMillis());
-        return result;
     }
 
     // =========================================================================
-    // STEP 2: Post picker status (same as V2)
+    // STEP 2: Post picker status
     // =========================================================================
     public Map<String, Object> step2PostPickerStatus() throws IOException {
         long startTimestamp = System.currentTimeMillis();
@@ -258,7 +187,7 @@ public class ApiFlowV3 {
     }
 
     // =========================================================================
-    // STEP 3: Load the crossword puzzle + CDN resources
+    // STEP 3: Load the hardcoded crossword puzzle
     // =========================================================================
     public Map<String, Object> step3LoadCrossword() throws IOException {
         long startTimestamp = System.currentTimeMillis();
@@ -272,7 +201,7 @@ public class ApiFlowV3 {
         String puzzleId = ApiConfig.PUZZLE_ID;
         context.put("puzzle_id", puzzleId);
 
-        log(String.format("Step 3: GET /crossword (id=%s) + CDN resources", puzzleId));
+        log(String.format("Step 3: GET /crossword (id=%s) [HARDCODED]", puzzleId));
 
         String srcUrl = String.format("%sdate-picker?set=%s&uid=%s",
                 config.getBaseUrl(), config.getSetParam(), uid);
@@ -294,9 +223,8 @@ public class ApiFlowV3 {
                 .build();
 
         long start = System.nanoTime();
-        double crosswordLatencyMs;
         try (Response response = client.newCall(request).execute()) {
-            crosswordLatencyMs = (System.nanoTime() - start) / 1_000_000.0;
+            double latencyMs = (System.nanoTime() - start) / 1_000_000.0;
 
             if (!response.isSuccessful()) {
                 throw new IOException("Unexpected response: " + response.code());
@@ -314,70 +242,20 @@ public class ApiFlowV3 {
                 }
             }
 
-            log(String.format("  crossword: %.1fms", crosswordLatencyMs));
+            log(String.format("  done in %.1fms", latencyMs));
+
+            Map<String, Object> result = new HashMap<>();
+            result.put("status_code", response.code());
+            result.put("puzzle_id", puzzleId);
+            result.put("latency_ms", latencyMs);
+            result.put("start_timestamp", startTimestamp);
+            result.put("end_timestamp", System.currentTimeMillis());
+            return result;
         }
-
-        // Fetch CDN resources after crossword page
-        List<Map<String, Object>> cdnResults = new ArrayList<>();
-        double totalCdnLatencyMs = 0;
-
-        for (String cdnUrl : STEP3_CDN_RESOURCES) {
-            Request cdnRequest = new Request.Builder()
-                    .url(cdnUrl)
-                    .addHeader("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
-                    .get()
-                    .build();
-
-            long cdnStart = System.nanoTime();
-            try (Response cdnResponse = client.newCall(cdnRequest).execute()) {
-                double cdnLatencyMs = (System.nanoTime() - cdnStart) / 1_000_000.0;
-                totalCdnLatencyMs += cdnLatencyMs;
-
-                if (cdnResponse.body() != null) {
-                    cdnResponse.body().bytes();
-                }
-
-                Map<String, Object> cdnResult = new HashMap<>();
-                cdnResult.put("url", cdnUrl);
-                cdnResult.put("status_code", cdnResponse.code());
-                cdnResult.put("latency_ms", cdnLatencyMs);
-                cdnResult.put("success", cdnResponse.isSuccessful());
-                cdnResults.add(cdnResult);
-
-                String shortUrl = cdnUrl.substring(cdnUrl.lastIndexOf('/') + 1);
-                if (shortUrl.contains("?")) {
-                    shortUrl = shortUrl.substring(0, shortUrl.indexOf('?'));
-                }
-                log(String.format("  CDN %s: %.1fms", shortUrl, cdnLatencyMs));
-
-            } catch (IOException e) {
-                Map<String, Object> cdnResult = new HashMap<>();
-                cdnResult.put("url", cdnUrl);
-                cdnResult.put("error", e.getMessage());
-                cdnResult.put("success", false);
-                cdnResults.add(cdnResult);
-                log(String.format("  CDN error: %s", e.getMessage()));
-            }
-        }
-
-        double totalLatencyMs = crosswordLatencyMs + totalCdnLatencyMs;
-        log(String.format("  total: %.1fms (crossword: %.1fms, CDN: %.1fms)",
-                totalLatencyMs, crosswordLatencyMs, totalCdnLatencyMs));
-
-        Map<String, Object> result = new HashMap<>();
-        result.put("status_code", 200);
-        result.put("puzzle_id", puzzleId);
-        result.put("latency_ms", totalLatencyMs);
-        result.put("crossword_latency_ms", crosswordLatencyMs);
-        result.put("cdn_latency_ms", totalCdnLatencyMs);
-        result.put("cdn_results", cdnResults);
-        result.put("start_timestamp", startTimestamp);
-        result.put("end_timestamp", System.currentTimeMillis());
-        return result;
     }
 
     // =========================================================================
-    // STEP 4: Simulate playing - 10 POST calls (same as V2)
+    // STEP 4: Simulate playing - 10 POST calls with hardcoded state length
     // =========================================================================
     private String[] generateState(int length, double fillRatio) {
         StringBuilder primary = new StringBuilder(length);

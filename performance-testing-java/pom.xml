@@ -5,12 +5,12 @@
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.perftest</groupId>
-    <artifactId>api-flow-v2</artifactId>
+    <artifactId>performance-testing</artifactId>
     <version>1.0.0</version>
     <packaging>jar</packaging>
 
-    <name>API Flow V2 Performance Testing</name>
-    <description>Performance testing tool - Java port of api_flow_v2.py</description>
+    <name>Performance Testing Suite</name>
+    <description>Performance testing suite — crossword API flow tests and traffic replay executors</description>
 
     <properties>
         <maven.compiler.source>17</maven.compiler.source>
@@ -81,9 +81,9 @@
                 <artifactId>maven-shade-plugin</artifactId>
                 <version>3.5.1</version>
                 <executions>
-                    <!-- V2 JAR -->
+                    <!-- Flow Runner JAR -->
                     <execution>
-                        <id>shade-v2</id>
+                        <id>shade-flow-runner</id>
                         <phase>package</phase>
                         <goals>
                             <goal>shade</goal>
@@ -91,16 +91,16 @@
                         <configuration>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>com.perftest.ApiFlowV2</mainClass>
+                                    <mainClass>com.perftest.flow.FlowRunner</mainClass>
                                 </transformer>
                             </transformers>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
-                            <finalName>api-flow-v2</finalName>
+                            <finalName>flow-runner</finalName>
                         </configuration>
                     </execution>
-                    <!-- V3 JAR (with CDN fetches) -->
+                    <!-- Flow Runner with CDN JAR -->
                     <execution>
-                        <id>shade-v3</id>
+                        <id>shade-flow-runner-cdn</id>
                         <phase>package</phase>
                         <goals>
                             <goal>shade</goal>
@@ -108,14 +108,14 @@
                         <configuration>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>com.perftest.ApiFlowV3Main</mainClass>
+                                    <mainClass>com.perftest.flow.FlowRunnerWithCdn</mainClass>
                                 </transformer>
                             </transformers>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
-                            <finalName>api-flow-v3</finalName>
+                            <finalName>flow-runner-cdn</finalName>
                         </configuration>
                     </execution>
-                    <!-- Streaming Replay Executor JAR -->
+                    <!-- Streaming Replay Executor JAR (legacy) -->
                     <execution>
                         <id>shade-replay</id>
                         <phase>package</phase>
@@ -125,7 +125,7 @@
                         <configuration>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>com.perftest.StreamingReplayExecutor</mainClass>
+                                    <mainClass>com.perftest.legacy.StreamingReplayExecutor</mainClass>
                                 </transformer>
                             </transformers>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
@@ -142,7 +142,7 @@
                         <configuration>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>com.perftest.TrafficReplayExecutor</mainClass>
+                                    <mainClass>com.perftest.replay.TrafficReplayExecutor</mainClass>
                                 </transformer>
                             </transformers>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
@@ -159,7 +159,7 @@
                         <configuration>
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
-                                    <mainClass>com.perftest.CompositeReplayExecutor</mainClass>
+                                    <mainClass>com.perftest.replay.CompositeReplayExecutor</mainClass>
                                 </transformer>
                             </transformers>
                             <createDependencyReducedPom>false</createDependencyReducedPom>

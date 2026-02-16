@@ -1,4 +1,6 @@
-package com.perftest;
+package com.perftest.flow;
+
+import com.perftest.common.ApiConfig;
 
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
@@ -6,10 +8,10 @@ import com.beust.jcommander.Parameter;
 import java.util.*;
 
 /**
- * Main entry point for API Flow V2 Performance Testing.
- * Java port of api_flow_v2.py
+ * CLI runner for the Crossword API Flow performance test.
+ * Supports single, parallel, and wave execution modes.
  */
-public class ApiFlowV2 {
+public class FlowRunner {
 
     @Parameter(names = { "--random-uid" }, description = "Generate random UID for each run")
     private boolean randomUid = false;
@@ -45,10 +47,10 @@ public class ApiFlowV2 {
     private boolean help = false;
 
     public static void main(String[] args) {
-        ApiFlowV2 app = new ApiFlowV2();
+        FlowRunner app = new FlowRunner();
         JCommander jc = JCommander.newBuilder()
                 .addObject(app)
-                .programName("api-flow-v2")
+                .programName("flow-runner")
                 .build();
 
         jc.parse(args);
@@ -64,7 +66,7 @@ public class ApiFlowV2 {
     public void run() {
 
         if (verbose) {
-            System.out.printf("V2 Mode: puzzle_id=%s, state_len=%d%n%n",
+            System.out.printf("Flow Runner: puzzle_id=%s, state_len=%d%n%n",
                     ApiConfig.PUZZLE_ID, ApiConfig.STATE_LEN);
         }
 
@@ -92,7 +94,7 @@ public class ApiFlowV2 {
     private void runWaveMode(List<String> uidPool) {
         if (verbose) {
             System.out.println("=".repeat(60));
-            System.out.println("Wave Execution Mode (V2)");
+            System.out.println("Wave Execution Mode");
             if (!title.isEmpty()) {
                 System.out.println("Title: " + title);
             }
@@ -148,7 +150,7 @@ public class ApiFlowV2 {
     private void runParallelMode(List<String> uidPool) {
         if (verbose) {
             System.out.println("=".repeat(60));
-            System.out.printf("Running %d parallel threads (V2)...%n", parallel);
+            System.out.printf("Running %d parallel threads...%n", parallel);
             System.out.println("=".repeat(60) + "\n");
         }
 
@@ -172,7 +174,7 @@ public class ApiFlowV2 {
                             .uidPool(pool)
                             .build();
 
-                    ApiFlow flow = new ApiFlow(config, verbose);
+                    CrosswordFlow flow = new CrosswordFlow(config, verbose);
                     try {
                         Map<String, Object> result = flow.runSequentialFlow();
                         threadResult.put("result", result);
@@ -213,7 +215,7 @@ public class ApiFlowV2 {
     private void runSingleMode(List<String> uidPool) {
         if (verbose) {
             System.out.println("=".repeat(60));
-            System.out.println("Running single thread (V2)...");
+            System.out.println("Running single thread...");
             System.out.println("=".repeat(60) + "\n");
         }
 
@@ -225,7 +227,7 @@ public class ApiFlowV2 {
                 .uidPool(uidPool)
                 .build();
 
-        ApiFlow flow = new ApiFlow(config, verbose);
+        CrosswordFlow flow = new CrosswordFlow(config, verbose);
         try {
             Map<String, Object> result = flow.runSequentialFlow();
             double totalTimeMs = (System.nanoTime() - startTime) / 1_000_000.0;

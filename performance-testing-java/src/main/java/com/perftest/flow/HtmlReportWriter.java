@@ -1,4 +1,4 @@
-package com.perftest;
+package com.perftest.flow;
 
 import java.io.FileWriter;
 import java.io.IOException;

@@ -1,4 +1,6 @@
-package com.perftest;
+package com.perftest.flow;
+
+import com.perftest.common.ApiConfig;
 
 import java.util.*;
 import java.util.concurrent.*;
@@ -6,8 +8,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Wave-based load testing with TRUE RPS: start `rps` threads every second for
- * `duration`
- * seconds, without waiting for previous waves to complete.
+ * `duration` seconds, without waiting for previous waves to complete.
  * 
  * This means threads from different waves may overlap and run concurrently.
  */
@@ -19,7 +20,7 @@ public class WaveExecutor {
     private final List<String> uidPool;
     private final String title;
     private final boolean verbose;
-    private final boolean useV3;
+    private final boolean useCdn;
 
     public WaveExecutor(int rps, int duration, boolean useRandomUid,
             List<String> uidPool, String title, boolean verbose) {
@@ -27,14 +28,14 @@ public class WaveExecutor {
     }
 
     public WaveExecutor(int rps, int duration, boolean useRandomUid,
-            List<String> uidPool, String title, boolean verbose, boolean useV3) {
+            List<String> uidPool, String title, boolean verbose, boolean useCdn) {
         this.rps = rps;
         this.duration = duration;
         this.useRandomUid = useRandomUid;
         this.uidPool = uidPool;
         this.title = title;
         this.verbose = verbose;
-        this.useV3 = useV3;
+        this.useCdn = useCdn;
     }
 
     public Map<String, Object> execute() {
@@ -51,8 +52,7 @@ public class WaveExecutor {
 
         // Shared thread pool for ALL API calls - large enough to handle overlapping
         // waves
-        // Max concurrent = rps * avg_completion_time_in_seconds (e.g., 5 * 4 = 20)
-        ExecutorService workerPool = Executors.newFixedThreadPool(rps * 8); // 5x for safety margin
+        ExecutorService workerPool = Executors.newFixedThreadPool(rps * 8);
 
         // Scheduler to launch waves every second
         ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
@@ -111,8 +111,8 @@ public class WaveExecutor {
                                     .uidPool(uidPool)
                                     .build();
 
-                            if (useV3) {
-                                ApiFlowV3 flow = new ApiFlowV3(config, verbose);
+                            if (useCdn) {
+                                CrosswordFlowWithCdn flow = new CrosswordFlowWithCdn(config, verbose);
                                 try {
                                     Map<String, Object> result = flow.runSequentialFlow();
                                     threadResult.put("result", result);
@@ -120,7 +120,7 @@ public class WaveExecutor {
                                     flow.close();
                                 }
                             } else {
-                                ApiFlow flow = new ApiFlow(config, verbose);
+                                CrosswordFlow flow = new CrosswordFlow(config, verbose);
                                 try {
                                     Map<String, Object> result = flow.runSequentialFlow();
                                     threadResult.put("result", result);

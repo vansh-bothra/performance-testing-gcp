@@ -1,4 +1,4 @@
-package com.perftest;
+package com.perftest.flow;
 
 import com.opencsv.CSVReader;
 import com.opencsv.exceptions.CsvException;

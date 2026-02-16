@@ -5,8 +5,8 @@ import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 import okhttp3.*;
 
-import com.perftest.ReplayReportWriter;
-import com.perftest.SessionManager;
+import com.perftest.replay.ReplayReportWriter;
+import com.perftest.replay.SessionManager;
 
 import java.io.*;
 import java.nio.file.*;

@@ -1,4 +1,6 @@
-package com.perftest;
+package com.perftest.flow;
+
+import com.perftest.common.ApiConfig;
 
 import com.beust.jcommander.JCommander;
 import com.beust.jcommander.Parameter;
@@ -6,10 +8,10 @@ import com.beust.jcommander.Parameter;
 import java.util.*;
 
 /**
- * Main entry point for API Flow V3 Performance Testing.
- * Same as V2 but with additional CDN resource fetches in Step 1.
+ * CLI runner for the Crossword API Flow with CDN resource fetches.
+ * Same modes as {@link FlowRunner} but uses {@link CrosswordFlowWithCdn}.
  */
-public class ApiFlowV3Main {
+public class FlowRunnerWithCdn {
 
     @Parameter(names = { "--random-uid" }, description = "Generate random UID for each run")
     private boolean randomUid = false;
@@ -45,10 +47,10 @@ public class ApiFlowV3Main {
     private boolean help = false;
 
     public static void main(String[] args) {
-        ApiFlowV3Main app = new ApiFlowV3Main();
+        FlowRunnerWithCdn app = new FlowRunnerWithCdn();
         JCommander jc = JCommander.newBuilder()
                 .addObject(app)
-                .programName("api-flow-v3")
+                .programName("flow-runner-cdn")
                 .build();
 
         jc.parse(args);
@@ -63,9 +65,9 @@ public class ApiFlowV3Main {
 
     public void run() {
         if (verbose) {
-            System.out.printf("V3 Mode: puzzle_id=%s, state_len=%d%n",
+            System.out.printf("Flow Runner (CDN): puzzle_id=%s, state_len=%d%n",
                     ApiConfig.PUZZLE_ID, ApiConfig.STATE_LEN);
-            System.out.println("V3 includes CDN resource fetches in Step 1");
+            System.out.println("Includes CDN resource fetches in Step 1 and Step 3");
             System.out.println();
         }
 
@@ -93,7 +95,7 @@ public class ApiFlowV3Main {
     private void runWaveMode(List<String> uidPool) {
         if (verbose) {
             System.out.println("=".repeat(60));
-            System.out.println("Wave Execution Mode (V3 with CDN)");
+            System.out.println("Wave Execution Mode (with CDN)");
             if (!title.isEmpty()) {
                 System.out.println("Title: " + title);
             }
@@ -105,7 +107,7 @@ public class ApiFlowV3Main {
 
         // Print summary
         System.out.println("\n" + "=".repeat(60));
-        System.out.println("WAVE EXECUTION SUMMARY (V3)");
+        System.out.println("WAVE EXECUTION SUMMARY (CDN)");
         System.out.println("=".repeat(60));
         System.out.printf("  Title:            %s%n", runData.getOrDefault("title", "(none)"));
         System.out.printf("  Puzzle ID:        %s%n", ApiConfig.PUZZLE_ID);
@@ -149,7 +151,7 @@ public class ApiFlowV3Main {
     private void runParallelMode(List<String> uidPool) {
         if (verbose) {
             System.out.println("=".repeat(60));
-            System.out.printf("Running %d parallel threads (V3 with CDN)...%n", parallel);
+            System.out.printf("Running %d parallel threads (with CDN)...%n", parallel);
             System.out.println("=".repeat(60) + "\n");
         }
 
@@ -173,7 +175,7 @@ public class ApiFlowV3Main {
                             .uidPool(pool)
                             .build();
 
-                    ApiFlowV3 flow = new ApiFlowV3(config, verbose);
+                    CrosswordFlowWithCdn flow = new CrosswordFlowWithCdn(config, verbose);
                     try {
                         Map<String, Object> result = flow.runSequentialFlow();
                         threadResult.put("result", result);
@@ -214,7 +216,7 @@ public class ApiFlowV3Main {
     private void runSingleMode(List<String> uidPool) {
         if (verbose) {
             System.out.println("=".repeat(60));
-            System.out.println("Running single thread (V3 with CDN)...");
+            System.out.println("Running single thread (with CDN)...");
             System.out.println("=".repeat(60) + "\n");
         }
 
@@ -226,7 +228,7 @@ public class ApiFlowV3Main {
                 .uidPool(uidPool)
                 .build();
 
-        ApiFlowV3 flow = new ApiFlowV3(config, verbose);
+        CrosswordFlowWithCdn flow = new CrosswordFlowWithCdn(config, verbose);
         try {
             Map<String, Object> result = flow.runSequentialFlow();
             double totalTimeMs = (System.nanoTime() - startTime) / 1_000_000.0;
@@ -240,7 +242,7 @@ public class ApiFlowV3Main {
     private void printResultsTable(List<Map<String, Object>> results, double totalTimeMs) {
         System.out.println();
         System.out.println("=".repeat(90));
-        System.out.println("RESULTS SUMMARY (V3)");
+        System.out.println("RESULTS SUMMARY (CDN)");
         System.out.println("=".repeat(90));
         System.out.println();
         System.out.printf("%-8s %-10s %-12s %-10s %-10s %-10s %-12s %-10s%n",
@@ -325,7 +327,7 @@ public class ApiFlowV3Main {
     private void printSingleResult(Map<String, Object> result, double totalTimeMs) {
         System.out.println();
         System.out.println("=".repeat(60));
-        System.out.println("RESULTS SUMMARY (V3)");
+        System.out.println("RESULTS SUMMARY (CDN)");
         System.out.println("=".repeat(60));
 
         if (!Boolean.TRUE.equals(result.get("success"))) {

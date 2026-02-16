@@ -1,4 +1,4 @@
-package com.perftest;
+package com.perftest.common;
 
 import java.util.ArrayList;
 import java.util.List;
