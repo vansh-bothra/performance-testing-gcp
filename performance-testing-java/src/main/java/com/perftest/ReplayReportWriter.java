@@ -492,28 +492,31 @@ public class ReplayReportWriter {
                                     }
                                 });
 
-                                // Histogram
-                                new Chart(document.getElementById('histogramChart'), {
-                                    type: 'bar',
-                                    data: {
-                                        labels: histogramLabels,
-                                        datasets: [{
-                                            label: 'Requests',
-                                            data: histogramBins,
-                                            backgroundColor: 'rgba(88, 166, 255, 0.6)',
-                                            borderColor: '#58a6ff',
-                                            borderWidth: 1
-                                        }]
+                                // Latency Distribution (Line Chart)
+                            new Chart(document.getElementById('histogramChart'), {
+                                type: 'line',
+                                data: {
+                                    labels: histogramLabels,
+                                    datasets: [{
+                                        label: 'Request Count',
+                                        data: histogramBins,
+                                        borderColor: '#58a6ff',
+                                        backgroundColor: 'rgba(88, 166, 255, 0.2)',
+                                        fill: true,
+                                        tension: 0.4,
+                                        pointRadius: 3,
+                                        pointBackgroundColor: '#58a6ff'
+                                    }]
+                                },
+                                options: {
+                                    responsive: true,
+                                    scales: {
+                                        x: { ticks: { color: '#8b949e' }, grid: { color: '#30363d' }, title: { display: true, text: 'Latency Range (ms)', color: '#8b949e' } },
+                                        y: { ticks: { color: '#8b949e' }, grid: { color: '#30363d' }, beginAtZero: true, title: { display: true, text: 'Request Count', color: '#8b949e' } }
                                     },
-                                    options: {
-                                        responsive: true,
-                                        scales: {
-                                            x: { ticks: { color: '#8b949e' }, grid: { color: '#30363d' } },
-                                            y: { ticks: { color: '#8b949e' }, grid: { color: '#30363d' }, beginAtZero: true }
-                                        },
-                                        plugins: { legend: { display: false } }
-                                    }
-                                });
+                                    plugins: { legend: { display: false } }
+                                }
+                            });
 
                                 // Gantt Chart (horizontal bar)
                                 const ganttDatasets = ganttData.map((d, i) => ({
