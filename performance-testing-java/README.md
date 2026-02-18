@@ -28,6 +28,21 @@ src/main/java/com/perftest/
 │   ├── SessionManager.java          # Session token management for replays
 │   └── ReplayReportWriter.java      # HTML Gantt-timeline report for replays
 │
+├── api/                          # Individual API endpoint testing
+│   ├── auth/
+│   │   └── TokenManager.java         # OAuth2 token lifecycle (auto-refresh, 401 retry)
+│   ├── client/
+│   │   └── ApiClient.java            # Authenticated OkHttp wrapper (GET/POST → ApiResponse)
+│   ├── model/
+│   │   └── ApiResponse.java          # Response wrapper (status, JSON body, latency, headers)
+│   ├── config/
+│   │   └── ApiTestConfig.java        # Base URL, series, auth path, timeouts
+│   ├── endpoints/
+│   │   ├── PuzzlesEndpoint.java      # GET /api/v1/puzzles
+│   │   └── PlaysEndpoint.java        # GET + POST /api/v1/plays
+│   └── runner/
+│       └── EndpointRunner.java       # CLI entry point for testing endpoints
+│
 └── legacy/                       # Deprecated / superseded
     ├── ReplayExecutor.java
     ├── StreamingReplayExecutor.java
@@ -133,6 +148,75 @@ Manages session tokens (cookies) for replay scenarios. Fetches fresh sessions by
 
 Generates HTML reports for replay test runs, including a Gantt-style timeline showing event scheduling and execution.
 
+#### `api/auth/TokenManager.java`
+
+OAuth2 token lifecycle manager. Handles:
+- Loading client credentials from `auth_config.json`
+- Fetching tokens via `POST /api/v1/token`
+- Automatic refresh after 55 minutes (5-min buffer before 1-hour expiry)
+- Thread-safe refresh — only one thread refreshes at a time
+- Force refresh on 401 via `handleUnauthorized()`
+
+#### `api/client/ApiClient.java`
+
+Shared OkHttp wrapper with built-in authentication. Provides:
+- `get(path, queryParams)` → `ApiResponse`
+- `post(path, jsonBody)` → `ApiResponse`
+- `post(path, queryParams, jsonBody)` → `ApiResponse`
+
+All methods automatically attach `Authorization: Bearer <token>` and retry once on 401 with a refreshed token. Latency is measured per request.
+
+#### `api/model/ApiResponse.java`
+
+Response wrapper returned by all `ApiClient` methods. Contains:
+- `statusCode` — HTTP status code
+- `body` — Auto-parsed `JsonObject` (null if response isn't JSON)
+- `rawBody` — Raw response string
+- `latencyMs` — Request latency in milliseconds
+- `headers` — Response headers
+
+Convenience: `getString(key)` extracts a value from the JSON body, useful for flow chaining.
+
+#### `api/config/ApiTestConfig.java`
+
+Configuration for API tests (builder pattern):
+
+| Field            | Default                               | Purpose                       |
+| ---------------- | ------------------------------------- | ----------------------------- |
+| `baseUrl`        | `https://cdn-test.amuselabs.com/pmm/` | API server                    |
+| `authConfigPath` | `auth_config.json`                    | Path to credentials file      |
+| `series`         | `gandalf`                             | Default series/set identifier |
+| `timeoutSeconds` | `30`                                  | HTTP timeout                  |
+| `maxConnections` | `100`                                 | Connection pool size          |
+| `verbose`        | `false`                               | Print debug output            |
+
+#### `api/endpoints/PuzzlesEndpoint.java`
+
+`GET /api/v1/puzzles` — List puzzles for a series.
+
+| Parameter | Type   | Default    | Description       |
+| --------- | ------ | ---------- | ----------------- |
+| `series`  | String | (required) | Series identifier |
+| `limit`   | int    | `14`       | Max results       |
+| `offset`  | int    | `0`        | Pagination offset |
+
+#### `api/endpoints/PlaysEndpoint.java`
+
+`GET /api/v1/plays` — List play records for a series.
+
+| Parameter   | Type   | Default    | Description                          |
+| ----------- | ------ | ---------- | ------------------------------------ |
+| `series`    | String | (required) | Series identifier                    |
+| `limit`     | int    | `14`       | Max results                          |
+| `offset`    | int    | `0`        | Pagination offset                    |
+| `puzzleIds` | String | (optional) | Comma-separated puzzle IDs to filter |
+
+`POST /api/v1/plays` — Submit play data (JSON body with `loadToken`, `series`, `id`, `userId`, `playState`, etc.). Use `PlaysEndpoint.buildPayload(...)` to construct a standard payload.
+
+#### `api/runner/EndpointRunner.java`
+
+CLI entry point for testing individual endpoints. See [API Endpoint Runner](#6-api-endpoint-runner) usage below.
+
 ---
 
 ## Prerequisites
@@ -155,6 +239,11 @@ This produces 5 executable JARs in `target/`:
 | `traffic-replay.jar`   | `TrafficReplayExecutor`   | PMM traffic replay          |
 | `composite-replay.jar` | `CompositeReplayExecutor` | Merged PMM + Pplmag replay  |
 | `replay-executor.jar`  | `StreamingReplayExecutor` | Legacy streaming replay     |
+
+The API endpoint runner is available via classpath from any of the JARs above:
+```bash
+java -cp target/flow-runner.jar com.perftest.api.runner.EndpointRunner --help
+```
 
 ---
 
@@ -303,6 +392,75 @@ java -cp target/flow-runner.jar com.perftest.flow.HtmlReportGenerator <results.c
 
 ---
 
+### 6. API Endpoint Runner
+
+Test individual API endpoints with automatic OAuth2 authentication.
+
+```bash
+java -cp target/flow-runner.jar com.perftest.api.runner.EndpointRunner --endpoint <name> [options]
+```
+
+> [!IMPORTANT]
+> Requires `auth_config.json` with OAuth2 credentials in the working directory.
+
+#### Available Endpoints
+
+| Endpoint  | Methods   | Path              |
+| --------- | --------- | ----------------- |
+| `puzzles` | GET       | `/api/v1/puzzles` |
+| `plays`   | GET, POST | `/api/v1/plays`   |
+
+#### All CLI Options
+
+| Flag                   | Description                             | Default                               |
+| ---------------------- | --------------------------------------- | ------------------------------------- |
+| `--endpoint <name>`    | Endpoint to test (required)             | –                                     |
+| `--method <GET\|POST>` | HTTP method                             | `GET`                                 |
+| `--base-url <url>`     | API base URL                            | `https://cdn-test.amuselabs.com/pmm/` |
+| `--auth-config <path>` | Path to `auth_config.json`              | `auth_config.json`                    |
+| `--series <name>`      | Series identifier                       | `gandalf`                             |
+| `--limit <n>`          | Pagination limit                        | `14`                                  |
+| `--offset <n>`         | Pagination offset                       | `0`                                   |
+| `--puzzle-ids <ids>`   | Comma-separated puzzle IDs (plays only) | –                                     |
+| `--repeat <n>`         | Repeat the request N times              | `1`                                   |
+| `-v, --verbose`        | Verbose output with response body       | `false`                               |
+
+#### Examples
+
+```bash
+# List puzzles
+java -cp target/flow-runner.jar com.perftest.api.runner.EndpointRunner \
+  --endpoint puzzles --series gandalf --limit 5 -v
+
+# List plays with pagination
+java -cp target/flow-runner.jar com.perftest.api.runner.EndpointRunner \
+  --endpoint plays --series gandalf --offset 14 --limit 14
+
+# Repeat a request 10 times (quick latency check)
+java -cp target/flow-runner.jar com.perftest.api.runner.EndpointRunner \
+  --endpoint puzzles --repeat 10
+```
+
+#### Flow Chaining (Programmatic)
+
+Endpoints return `ApiResponse` objects, so you can chain them in custom Java code:
+
+```java
+ApiTestConfig config = ApiTestConfig.builder().series("gandalf").verbose(true).build();
+try (ApiClient client = new ApiClient(config)) {
+    // Step 1: Get puzzles
+    ApiResponse puzzlesResp = new PuzzlesEndpoint("gandalf").limit(1).get(client);
+    String puzzleId = puzzlesResp.getBody().getAsJsonArray("data").get(0)
+            .getAsJsonObject().get("id").getAsString();
+
+    // Step 2: Get plays for that puzzle
+    ApiResponse playsResp = new PlaysEndpoint("gandalf").puzzleIds(puzzleId).get(client);
+    System.out.println(playsResp);
+}
+```
+
+---
+
 ## Hardcoded Constants Reference
 
 Constants that must be updated in source code when testing a different domain, puzzle, or CDN layout:
@@ -354,11 +512,15 @@ Constants that must be updated in source code when testing a different domain, p
 | `STEP1_CDN_RESOURCES` | (array) | CDN assets fetched after Step 1 |
 | `STEP3_CDN_RESOURCES` | (array) | CDN assets fetched after Step 3 |
 
+### `api/config/ApiTestConfig.java`
+
+All configurable via builder — no source edits needed. See [file description](#apiconfigapitestconfigjava) above.
+
 ---
 
 ## `auth_config.json` Format
 
-Required by `PplmagReplayExecutor` and `CompositeReplayExecutor`. Place in the working directory:
+Required by `PplmagReplayExecutor`, `CompositeReplayExecutor`, and all `api` package endpoints. Place in the working directory:
 
 ```json
 {
